@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from .email_sender import send_email
+from .templates import SIGNATURE
 from .to_sheets import connect, is_email
 
 DEFAULT_PRESENTATION = "https://canva.link/n4hed1htcuepmq5"
@@ -27,6 +28,7 @@ CLIENTS_HEADERS = [
     "Geo",
     "Services",
     "Calendly",
+    "Calendly API Token",
     "Workspace Email",
     "Deal Size",
     "Pricing",
@@ -37,7 +39,30 @@ CLIENTS_HEADERS = [
     "Payment TXID",
     "Payment Date",
     "Payment Amount",
+    "Client Type",
+    "Engagement Number",
+    "Payment Model",
+    "Upfront Paid",
+    "Pilot Completed",
+    "Total Billed",
+    "Total Paid",
+    "Total Lifetime Value",
+    "Number of Engagements",
+    "Average Meetings per Engagement",
+    "Meetings",
+    "Completed Date",
 ]
+
+QUALIFIED_MEETING_BLURB = (
+    "What counts as a \"qualified\" meeting (you only pay for these):\n"
+    "1. Meeting took place (not a no-show or cancellation)\n"
+    "2. Duration >= 15 minutes\n"
+    "3. Attendee is a decision-maker (Owner, CEO, Founder, President, "
+    "Practice Manager, or Director)\n"
+    "4. From your target geography (as in your brief)\n"
+    "5. Represents a real dental practice (not a competitor / student / researcher)\n"
+    "6. Not a duplicate of the same attendee in the same calendar month\n"
+)
 
 
 def _col_letter(n: int) -> str:
@@ -60,7 +85,12 @@ FIELD_ALIASES = {
     "icp": ("what types of dental practices", "types of dental", "icp"),
     "geo": ("geographic target", "geography", "geo"),
     "services": ("what services do you sell", "services"),
-    "calendly": ("your calendly", "calendly"),
+    "calendly": ("your calendly", "calendly link", "calendly url"),
+    "calendly_token": (
+        "calendly api token",
+        "your calendly api token",
+        "calendly token",
+    ),
     "workspace_email": ("google workspace email", "workspace email", "sending"),
     "deal_size": ("average deal size", "deal size"),
     "pricing": ("preferred pricing", "pricing model"),
@@ -108,27 +138,25 @@ def send_async_onboarding(lead_email: str, first_name: str, company: str) -> boo
         f"STEP 2 — onboarding form (5 minutes) — fill this so I can launch:\n"
         f"{form}\n"
         f"\n"
-        f"You don't need to hunt for the form inside the deck — the link is right here "
-        f"in this email. Once I receive it, I'll launch your campaign within 24 hours.\n"
+        f"PILOT PRICING (first engagement):\n"
+        f"→ $0 upfront — you pay nothing to start\n"
+        f"→ $150 per qualified meeting (max $750)\n"
+        f"→ If we don't deliver 5 qualified meetings, you pay only for what we booked "
+        f"(and $0 if none)\n"
+        f"→ Payment is due AFTER the pilot — post-payment\n"
         f"\n"
-        f"You'll get weekly reports every Monday with full transparency:\n"
-        f"- Emails sent\n"
-        f"- Open rates\n"
-        f"- Replies received\n"
-        f"- Meetings booked\n"
+        f"{QUALIFIED_MEETING_BLURB}"
         f"\n"
-        f"Any questions? Just reply to this email — I respond within a few hours.\n"
+        f"Once I receive your form, I'll launch within 24 hours (no payment needed first).\n"
         f"\n"
-        f"Looking forward to working together!\n"
+        f"You'll get weekly reports every Monday with full transparency.\n"
         f"\n"
-        f"— Vladislav\n"
-        f"Founder, DentalMeet\n"
-        f"hello@dentalmeet.agency\n"
-        f"dentalmeet.agency\n"
+        f"Any questions? Just reply — I respond within a few hours.\n"
         f"\n"
-        f"P.S. Prefer a quick call instead? Book here: {calendly_url()}\n"
+        f"{SIGNATURE}"
         f"\n"
-        f"Form again (bookmark this): {form}\n"
+        f"P.S. Prefer a quick call? {calendly_url()}\n"
+        f"Form again: {form}\n"
     )
     ok = send_email(email, subject, body)
     if ok:
@@ -233,44 +261,69 @@ def _ensure_processed_col(ws, headers: list[str]) -> int:
     return col - 1
 
 
-def _append_client(ws, data: dict) -> None:
-    values = ws.get_all_values()
-    next_row = len(values) + 1
-    # Dedup by email in column C
-    email = data["Email"].lower()
-    for i, row in enumerate(values[1:], start=2):
-        if len(row) > 2 and row[2].strip().lower() == email:
-            print(f"client already exists: {email} (row {i})")
-            return
-    record = [data.get(h, "") for h in CLIENTS_HEADERS]
-    # Pad payment cols empty for new form rows
-    while len(record) < len(CLIENTS_HEADERS):
-        record.append("")
-    ws.update(
-        range_name=_clients_range(next_row),
-        values=[record],
-        value_input_option="USER_ENTERED",
-    )
-    print(f"client added: {email}")
-
-
-def _confirmation_email(name: str, email: str) -> bool:
-    """Ack the form; payment instructions are sent right after separately."""
+def _pilot_welcome_email(name: str, email: str) -> bool:
     first = (name or "").strip().split()[0] if (name or "").strip() else "there"
-    subject = "got your form — next: payment"
+    subject = "welcome — pilot started (no upfront payment)"
     body = (
         f"Hi {first},\n"
         f"\n"
-        f"Thanks for filling out the form — you're in.\n"
+        f"Welcome! No upfront payment needed.\n"
         f"\n"
-        f"Next step is payment for the pilot. I'm sending the USDT (TRC20) "
-        f"details in the next email.\n"
+        f"We'll bill you after the pilot for qualified meetings only "
+        f"($150 each, max $750). If we don't deliver, you pay nothing.\n"
         f"\n"
-        f"As soon as payment is confirmed, I'll connect your Workspace and "
-        f"launch outreach within 24 hours.\n"
+        f"{QUALIFIED_MEETING_BLURB}"
         f"\n"
-        f"— Vladislav\n"
-        f"DentalMeet\n"
+        f"Next: I'll connect your Workspace and launch outreach within 24 hours. "
+        f"Watch for a separate email with the Google connect link.\n"
+        f"\n"
+        f"Agreement summary (full terms on request):\n"
+        f"— Pilot = post-payment\n"
+        f"— Only qualified meetings are billed\n"
+        f"— Full breakdown report with every invoice\n"
+        f"\n"
+        f"{SIGNATURE}"
+    )
+    return send_email(email, subject, body)
+
+
+def _repeat_welcome_email(name: str, email: str) -> bool:
+    from .ai_reply_assistant import send_upfront_payment_instructions
+
+    first = (name or "").strip().split()[0] if (name or "").strip() else "there"
+    subject = "welcome back — $300 setup to relaunch"
+    body = (
+        f"Hi {first},\n"
+        f"\n"
+        f"Welcome back! Please pay $300 upfront to start this engagement.\n"
+        f"\n"
+        f"Then: $150 per qualified meeting "
+        f"(or reply if you prefer the $1,000 flat for 7 meetings).\n"
+        f"\n"
+        f"{QUALIFIED_MEETING_BLURB}"
+        f"\n"
+        f"Payment details are in the next email (USDT TRC20).\n"
+        f"\n"
+        f"{SIGNATURE}"
+    )
+    ok = send_email(email, subject, body)
+    send_upfront_payment_instructions(email, first, amount=300)
+    return ok
+
+
+def _continuation_email(name: str, email: str) -> bool:
+    first = (name or "").strip().split()[0] if (name or "").strip() else "there"
+    subject = "got your update — continuing your active pilot"
+    body = (
+        f"Hi {first},\n"
+        f"\n"
+        f"Thanks — you're already on an active engagement, so I won't create "
+        f"a new project. We'll keep running on your current pilot terms "
+        f"($0 upfront, $150/qualified meeting, max $750).\n"
+        f"\n"
+        f"If anything in the brief changed, just reply with the updates.\n"
+        f"\n"
+        f"{SIGNATURE}"
     )
     return send_email(email, subject, body)
 
@@ -314,7 +367,7 @@ def check_form_responses() -> dict:
 
         name = _cell(row, fmap.get("name"))
         company = _cell(row, fmap.get("company"))
-        data = {
+        brief = {
             "Company": company,
             "Name": name,
             "Email": email,
@@ -322,25 +375,34 @@ def check_form_responses() -> dict:
             "Geo": _cell(row, fmap.get("geo")),
             "Services": _cell(row, fmap.get("services")),
             "Calendly": _cell(row, fmap.get("calendly")),
+            "Calendly API Token": _cell(row, fmap.get("calendly_token")),
             "Workspace Email": _cell(row, fmap.get("workspace_email")),
             "Deal Size": _cell(row, fmap.get("deal_size")),
             "Pricing": _cell(row, fmap.get("pricing")),
             "Notes": _cell(row, fmap.get("extra")),
-            "Status": "awaiting_payment",
             "Created": today,
         }
 
         try:
-            from .ai_reply_assistant import send_payment_instructions
+            from delivery.client_tracker import create_client_record
 
-            _append_client(clients_ws, data)
+            # Ensure Clients sheet exists before tracker writes
+            _ = clients_ws
+            record = create_client_record(email, company, brief)
             form_ws.update_cell(i, processed_idx + 1, "Processed")
-            _confirmation_email(name, email)
-            # Payment opens HERE — after brief is received, before delivery launch
-            first = (name or "").split()[0] if name else ""
-            send_payment_instructions(email, first)
+
+            if record.get("continuation"):
+                _continuation_email(name, email)
+                label = "continuation"
+            elif record.get("is_repeat"):
+                _repeat_welcome_email(name, email)
+                label = "repeat + $300 upfront"
+            else:
+                _pilot_welcome_email(name, email)
+                label = "pilot $0 upfront"
+
             stats["processed"] += 1
-            print(f"row {i}: processed {email} (+ payment instructions)")
+            print(f"row {i}: processed {email} ({label})")
         except Exception as e:
             stats["errors"] += 1
             print(f"row {i}: error {e}")

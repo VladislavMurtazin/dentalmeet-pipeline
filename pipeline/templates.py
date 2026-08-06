@@ -7,6 +7,14 @@ CALENDLY_URL = (
     os.environ.get("CALENDLY_URL", "").strip() or _DEFAULT_CALENDLY
 )
 
+# Standard agency signature (warm / DentalMeet-owned inbox).
+# Cold outreach should later move to a separate sending domain/mailbox.
+SIGNATURE = (
+    "— Vladislav\n"
+    "Founder, DentalMeet\n"
+    "hello@dentalmeet.agency\n"
+)
+
 
 def FIRST_EMAIL_TEMPLATE(
     first_name: str,
@@ -27,25 +35,27 @@ def FIRST_EMAIL_TEMPLATE(
         f"Hi {name},\n"
         f"\n"
         f"{opener_block}"
-        f"I run an autonomous B2B lead generation platform that books 15-20 "
+        f"I run an autonomous B2B lead generation platform that books "
         f"qualified meetings with dental practice owners in 2-3 weeks. "
         f"We handle everything: research, personalization, sending, "
         f"follow-ups, and meeting booking.\n"
         f"\n"
         f"Pilot offer (only 3 spots left):\n"
-        f"→ $0 upfront\n"
-        f"→ $150 per booked meeting (or $700 flat)\n"
-        f"→ Weekly transparency reports\n"
-        f"→ Case-study pricing locked for 6 months\n"
+        f"→ $0 upfront — you pay nothing to start\n"
+        f"→ $150 per qualified meeting (max $750 for pilot)\n"
+        f"→ If we don't deliver 5 meetings, you pay nothing\n"
+        f"\n"
+        f"What counts as \"qualified\":\n"
+        f"✅ Meeting took place (no no-shows)\n"
+        f"✅ Attendee is decision-maker (Owner, CEO, Practice Manager)\n"
+        f"✅ Duration >= 15 minutes\n"
+        f"✅ From your target geography\n"
         f"\n"
         f"Worth a quick 15-min call to see if it fits?\n"
         f"\n"
         f"{calendly_url}\n"
         f"\n"
-        f"— Vladislav\n"
-        f"Founder, DentalMeet\n"
-        f"hello@dentalmeet.agency\n"
-        f"dentalmeet.agency\n"
+        f"{SIGNATURE}"
         f"\n"
         f'P.S. Not relevant? Reply "no thanks" and I\'ll stop.\n'
     )
@@ -73,8 +83,7 @@ def FOLLOWUP_1_TEMPLATE(
         f"\n"
         f'If not, reply "not interested" and I\'ll close the loop.\n'
         f"\n"
-        f"— Vladislav\n"
-        f"DentalMeet\n"
+        f"{SIGNATURE}"
     )
     return subject, body
 
@@ -102,7 +111,6 @@ def FOLLOWUP_2_TEMPLATE(
         f"\n"
         f"Otherwise I'll assume the timing isn't right and won't follow up again.\n"
         f"\n"
-        f"— Vladislav\n"
-        f"Founder, DentalMeet\n"
+        f"{SIGNATURE}"
     )
     return subject, body

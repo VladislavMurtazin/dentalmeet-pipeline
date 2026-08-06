@@ -116,12 +116,23 @@ def _whois_age_days(domain: str) -> int | None:
         return None
 
 
+def with_dentalmeet_utm(calendly_url: str) -> str:
+    """Ensure Calendly booking link is tagged utm_source=dentalmeet."""
+    url = (calendly_url or "").strip()
+    if not url:
+        return ""
+    if "utm_source=dentalmeet" in url.lower():
+        return url
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}utm_source=dentalmeet"
+
+
 def build_outreach_email(target: dict, client_info: dict, opener: str = "") -> tuple[str, str]:
     """Personalized dental-practice outreach from the agency client."""
     first = (target.get("first_name") or "").strip() or "there"
     practice = (target.get("company") or "your practice").strip()
     opener = (opener or target.get("opener") or "").strip()
-    calendly = (client_info.get("calendly") or "").strip()
+    calendly = with_dentalmeet_utm(client_info.get("calendly") or "")
     agent_name = (client_info.get("name") or "").strip() or "the team"
     agency = (client_info.get("company") or "").strip() or "our agency"
     domain = (client_info.get("email") or "").split("@")[-1]
@@ -148,6 +159,15 @@ def build_outreach_email(target: dict, client_info: dict, opener: str = "") -> t
 
 def send_as_client(client_email: str, target: dict, email_content: dict) -> str:
     """Send one email via client's Gmail API credentials. Returns message id."""
+    to = (target.get("email") or email_content.get("to") or "").strip()
+    subject = email_content.get("subject") or ""
+    body = email_content.get("body") or ""
+    from_addr = (email_content.get("from") or client_email).strip()
+
+    if os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes"):
+        print(f"DRY_RUN send_as {from_addr} → {to}: {subject}")
+        return "dry-run"
+
     from googleapiclient.discovery import build
 
     from .connect_workspace import refresh_tokens
@@ -155,31 +175,20 @@ def send_as_client(client_email: str, target: dict, email_content: dict) -> str:
     creds = refresh_tokens(client_email)
     service = build("gmail", "v1", credentials=creds, cache_discovery=False)
 
-    to = (target.get("email") or email_content.get("to") or "").strip()
-    subject = email_content.get("subject") or ""
-    body = email_content.get("body") or ""
-    from_addr = (email_content.get("from") or client_email).strip()
-
     msg = MIMEText(body, _charset="utf-8")
     msg["To"] = to
     msg["From"] = from_addr
     msg["Subject"] = subject
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain=from_addr.split("@")[-1])
-    if email_content.get("thread_id"):
-        # Gmail thread via References/In-Reply-To optional
-        if email_content.get("in_reply_to"):
-            msg["In-Reply-To"] = email_content["in_reply_to"]
-            msg["References"] = email_content["in_reply_to"]
+    if email_content.get("thread_id") and email_content.get("in_reply_to"):
+        msg["In-Reply-To"] = email_content["in_reply_to"]
+        msg["References"] = email_content["in_reply_to"]
 
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii").rstrip("=")
     body_req: dict = {"raw": raw}
     if email_content.get("thread_id"):
         body_req["threadId"] = email_content["thread_id"]
-
-    if os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes"):
-        print(f"DRY_RUN send_as {from_addr} → {to}: {subject}")
-        return "dry-run"
 
     sent = (
         service.users()

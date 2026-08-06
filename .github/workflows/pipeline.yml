@@ -10,6 +10,8 @@ on:
     - cron: "0 */2 * * *"    # check_forms — every 2 hours
     - cron: "0 13 * * 1-5"   # delivery send_as_client — weekdays 13:00 UTC
     - cron: "0 9 * * 1"      # weekly reports — Monday 09:00 UTC
+    - cron: "0 10 1 * *"     # monthly invoices — 1st of month 10:00 UTC
+    - cron: "0 11 * * *"     # overdue invoice reminders — daily 11:00 UTC
   workflow_dispatch:
     inputs:
       job:
@@ -26,6 +28,8 @@ on:
           - check_forms
           - delivery_send
           - weekly_report
+          - monthly_invoices
+          - check_overdue
           - all
 
 env:
@@ -41,6 +45,7 @@ env:
   BRIEF_FORM_URL: ${{ secrets.BRIEF_FORM_URL }}
   FORM_RESPONSES_SPREADSHEET: ${{ secrets.FORM_RESPONSES_SPREADSHEET }}
   FORM_RESPONSES_WORKSHEET: ${{ secrets.FORM_RESPONSES_WORKSHEET }}
+  TRC20_WALLET_ADDRESS: ${{ secrets.TRC20_WALLET_ADDRESS }}
   GMAIL_TOKEN_FILE: gmail_token.json
 
 jobs:
@@ -279,3 +284,56 @@ jobs:
           GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
           GMAIL_TOKEN_FILE: gmail_token.json
           TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
+
+  monthly_invoices:
+    name: monthly_invoices
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 10 1 * *') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.job == 'monthly_invoices' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Write secrets
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT }}' > service_account.json
+          echo '${{ secrets.GMAIL_TOKEN_JSON }}' > gmail_token.json
+      - run: python -m delivery.billing send_all --period month
+        env:
+          APOLLO_KEY: ${{ secrets.APOLLO_KEY }}
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+          GMAIL_TOKEN_FILE: gmail_token.json
+          TRC20_WALLET_ADDRESS: ${{ secrets.TRC20_WALLET_ADDRESS }}
+          TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
+          CALENDLY_API_TOKEN: ${{ secrets.CALENDLY_API_TOKEN }}
+
+  check_overdue:
+    name: check_overdue
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 11 * * *') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.job == 'check_overdue' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Write secrets
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT }}' > service_account.json
+          echo '${{ secrets.GMAIL_TOKEN_JSON }}' > gmail_token.json
+      - run: python -m delivery.payment_tracker check_overdue
+        env:
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+          GMAIL_TOKEN_FILE: gmail_token.json
+          TRC20_WALLET_ADDRESS: ${{ secrets.TRC20_WALLET_ADDRESS }}

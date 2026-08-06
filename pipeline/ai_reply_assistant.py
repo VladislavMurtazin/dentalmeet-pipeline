@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from .email_sender import send_email
+from .templates import SIGNATURE
 from .to_sheets import is_email
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -32,8 +33,8 @@ Use simple language.
 Common questions and answers:
 - "How do you find contacts?" -> "We use Apollo.io + custom enrichment,
   targeting practice owners and decision-makers only."
-- "What if I don't get meetings?" -> "You only pay for booked meetings.
-  No results = no payment."
+- "What if I don't get meetings?" -> "Pilot: $0 upfront, $150/qualified meeting
+  (max $750). No qualified meetings = $0. You only pay after the pilot."
 - "Can I see email examples?" -> "Sure! Here are 3 examples from recent campaigns."
 - "How long until results?" -> "First meetings typically book in 7-10 days."
 - "Do you offer payment methods besides crypto?" ->
@@ -204,7 +205,8 @@ def _template_fallback(incoming_email: str) -> str:
         )
     if "pay" in low or "meeting" in low and "don't" in low:
         return (
-            "You only pay for booked meetings. No results = no payment. "
+            "You only pay for qualified meetings (decision-maker, your geo, "
+            "15+ min, actually held). No results = no payment. "
             "Happy to walk through the pilot pricing if you want."
         )
     if "call" in low or "zoom" in low or "meet" in low:
@@ -270,47 +272,78 @@ def save_draft(
     return path
 
 
-def send_payment_instructions(lead_email: str, first_name: str) -> bool:
-    """Send USDT TRC20 payment details for the $700 pilot."""
+def send_upfront_payment_instructions(
+    lead_email: str,
+    first_name: str,
+    amount: int = 300,
+) -> bool:
+    """Send USDT TRC20 details for Repeat setup fee (or flat)."""
     email = (lead_email or "").strip()
     if not is_email(email):
-        print(f"send_payment_instructions: bad email {email!r}")
+        print(f"send_upfront_payment_instructions: bad email {email!r}")
         return False
     wallet = _wallet()
     if not wallet:
-        print("send_payment_instructions: TRC20_WALLET_ADDRESS missing in .env")
+        print("send_upfront_payment_instructions: TRC20_WALLET_ADDRESS missing")
         return False
 
     name = (first_name or "").strip() or "there"
-    subject = "payment details"
+    subject = "payment details — setup fee"
     body = (
         f"Hi {name},\n"
         f"\n"
-        f"Thanks for moving forward with DentalMeet!\n"
+        f"Here are the payment details for your setup fee:\n"
         f"\n"
-        f"Here are the payment details:\n"
-        f"\n"
-        f"AMOUNT: $700 (flat pilot pricing)\n"
-        f"\n"
+        f"AMOUNT: ${amount} USD\n"
         f"PAYMENT METHOD: USDT via TRC20 network\n"
         f"WALLET ADDRESS: {wallet}\n"
         f"\n"
         f"INSTRUCTIONS:\n"
-        f"1. Buy USDT on your preferred exchange (Binance, Coinbase, Kraken, etc.)\n"
-        f"2. Send exactly $700 worth of USDT to the TRC20 address above\n"
-        f"3. Reply to this email with the transaction hash (TXID)\n"
-        f"4. I'll confirm receipt within 1 hour and launch your campaign\n"
+        f"1. Send ${amount} USDT (TRC20) to the address above\n"
+        f"2. Reply with the transaction hash (TXID)\n"
+        f"3. I'll confirm within ~1 hour and launch\n"
         f"\n"
-        f"WHY USDT/TRC20:\n"
-        f"✅ Instant settlement (1-2 minutes)\n"
-        f"✅ No bank fees or delays\n"
-        f"✅ No currency conversion needed\n"
+        f"{SIGNATURE}"
+    )
+    return send_email(email, subject, body)
+
+
+def send_payment_instructions(lead_email: str, first_name: str) -> bool:
+    """
+    Payment email based on client type.
+    Pilot → remind post-pay model (no charge now).
+    Repeat → $300 upfront instructions.
+    """
+    email = (lead_email or "").strip()
+    if not is_email(email):
+        print(f"send_payment_instructions: bad email {email!r}")
+        return False
+
+    name = (first_name or "").strip() or "there"
+    try:
+        from delivery.client_tracker import get_client_payment_model
+
+        model = get_client_payment_model(email)
+    except Exception:
+        model = {"client_type": "Pilot", "upfront": 0}
+
+    if (model.get("client_type") or "Pilot").lower() == "repeat":
+        amt = int(model.get("upfront") or 300)
+        return send_upfront_payment_instructions(email, name, amount=amt)
+
+    # Pilot: no upfront — explain post-payment
+    subject = "payment model — pilot (pay after)"
+    body = (
+        f"Hi {name},\n"
         f"\n"
-        f"If you have questions about the payment process, just reply here.\n"
+        f"For the pilot there is $0 upfront.\n"
         f"\n"
-        f"Looking forward to working together!\n"
+        f"After the pilot we invoice $150 × qualified meetings "
+        f"(max $750). You'll get a full qualification breakdown.\n"
         f"\n"
-        f"— Vladislav\n"
-        f"Founder, DentalMeet\n"
+        f"Pay later via USDT TRC20 — I'll send the exact amount + wallet "
+        f"when the pilot wraps.\n"
+        f"\n"
+        f"{SIGNATURE}"
     )
     return send_email(email, subject, body)
