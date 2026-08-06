@@ -45,6 +45,9 @@ Outbound SMTP (465/587) is often blocked by ISPs. Sending uses the **Gmail API o
    - Download the JSON → save as `client_secrets.json` in the project root  
      (path override: `GMAIL_CLIENT_SECRETS` in `.env`)
 2. Set `GMAIL_EMAIL` in `.env` to the mailbox you will send from  
+   (today: DentalMeet inbox for warm/client mail; cold outreach should later
+   move to a separate domain — keep the primary domain for replies/clients)  
+
 3. Run the one-time browser consent flow:
 
 ```bash
@@ -110,8 +113,32 @@ python -m delivery.connect_workspace send_link client@agency.com --name John
 # After client connects + brief is in Clients:
 python -m delivery.research_dental build_list client@agency.com --limit 50
 python -m delivery.send_as_client run client@agency.com --limit 10
+
+# Payment flow (stages 4–10)
+python -m delivery.track_meetings fetch client@agency.com
+python -m delivery.track_meetings list client@agency.com
+python -m delivery.track_meetings dashboard client@agency.com
+python -m delivery.qualify_meetings check client@agency.com
+python -m delivery.qualify_meetings report client@agency.com
+python -m delivery.billing invoice client@agency.com
+python -m delivery.billing send client@agency.com
+python -m delivery.payment_tracker verify TXID
+python -m delivery.payment_tracker mark_paid client@agency.com TXID
+python -m delivery.payment_tracker check_overdue
+
+# Pilot vs Repeat
+python -m delivery.client_tracker check client@agency.com
+python -m delivery.client_tracker complete_pilot client@agency.com
+
 python -m delivery.weekly_report send client@agency.com
 ```
+
+**Form (manual):** add question *Your Calendly API token* → column `Calendly API Token` in Clients.
+
+Agreement template: [`docs/pilot_agreement.md`](docs/pilot_agreement.md) (copy into Google Docs).
+
+**Payment model:** Pilot = $0 upfront, $150/qualified meeting, max $750, pay after.  
+Repeat = $300 upfront + $150/meeting (or $1000 flat / 7).
 
 In GCP OAuth client, add authorized redirect URI:  
 `http://localhost:8000/oauth/callback`  

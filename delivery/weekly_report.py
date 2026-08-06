@@ -48,12 +48,16 @@ def collect_week_stats(client_email: str) -> dict:
                     sent_rows.append(row)
 
     meetings = []
+    qualified = 0
+    invoice_line = ""
     try:
         from .track_meetings import count_billable_meetings
 
         m = count_billable_meetings(client_email, period="week")
         meetings = m.get("meetings") or []
+        qualified = m.get("qualified_meetings", len(meetings))
         billable = m.get("billable_amount", 0)
+        invoice_line = m.get("invoice_line") or ""
     except Exception as e:
         print(f"meetings lookup skipped: {e}")
         billable = 0
@@ -66,7 +70,9 @@ def collect_week_stats(client_email: str) -> dict:
         "open_rate": None,  # no pixel tracking yet
         "replies": {"total": 0, "positive": 0, "questions": 0, "not_interested": 0},
         "meetings": len(meetings),
+        "qualified_meetings": qualified,
         "billable_amount": billable,
+        "invoice_line": invoice_line,
         "meeting_rows": meetings[:5],
         "top_targets": sent_rows[:5],
     }
@@ -96,8 +102,9 @@ h1{{font-size:1.4rem}} .muted{{color:#666}}
   <p>💬 Replies: <b>{stats['replies']['total']}</b>
      ({stats['replies']['positive']} positive,
       {stats['replies']['questions']} questions)</p>
-  <p>📅 Meetings booked: <b>{stats['meetings']}</b></p>
+  <p>📅 Qualified meetings: <b>{stats.get('qualified_meetings', stats['meetings'])}</b></p>
   <p>💵 Billable: <b>${stats['billable_amount']}</b></p>
+  <p class="muted">{stats.get('invoice_line') or ''}</p>
 </div>
 </body></html>
 """
@@ -138,7 +145,8 @@ def send_weekly_report(client_email: str) -> bool:
         f"💬 Replies: {stats['replies']['total']} "
         f"({stats['replies']['positive']} positive, "
         f"{stats['replies']['questions']} questions)\n"
-        f"📅 Meetings booked: {stats['meetings']}\n"
+        f"📅 Qualified meetings: {stats.get('qualified_meetings', stats['meetings'])}\n"
+        f"💵 {stats.get('invoice_line') or ('Billable: $' + str(stats['billable_amount']))}\n"
         f"\n"
         f"Full HTML report saved on our side "
         f"({report_path.name}). Reply if you want it attached next week.\n"

@@ -9,3 +9,4 @@ google-auth-oauthlib
 flask
 cryptography
 python-whois
+fpdf2

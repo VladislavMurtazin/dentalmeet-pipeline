@@ -10,6 +10,7 @@ data/dry_run.json.txt
 data/drafts/
 data/suppression.txt
 data/reports/
+data/invoices/
 tokens/
 targets/
 logs/
