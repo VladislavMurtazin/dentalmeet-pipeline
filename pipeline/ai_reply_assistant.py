@@ -40,8 +40,8 @@ Common questions and answers:
 - "Do you offer payment methods besides crypto?" ->
   "For the pilot, we accept USDT (TRC20) for instant settlement.
   Wire transfer is possible but adds $50-100 in fees."
-- "Can we do a call?" -> "We work 100% async. But if you prefer,
-  book here: {calendly_url}"
+- "Can we do a call?" -> "We work 100% async — no calls.
+  Reply interested and I'll send the presentation + onboarding form."
 
 For questions not in the list, say:
 "Great question! Let me check and get back to you within a few hours."
@@ -197,7 +197,6 @@ def _call_openrouter_qwen(prompt: str) -> str:
 def _template_fallback(incoming_email: str) -> str:
     """Deterministic short reply when no AI key is available."""
     low = (incoming_email or "").lower()
-    cal = _calendly()
     if "contact" in low or "apollo" in low or "find" in low:
         return (
             "We use Apollo.io + custom enrichment, targeting practice owners "
@@ -211,7 +210,9 @@ def _template_fallback(incoming_email: str) -> str:
         )
     if "call" in low or "zoom" in low or "meet" in low:
         return (
-            f"We work 100% async. If you prefer a quick call, book here: {cal}"
+            "We work 100% async — no calls on our side. "
+            'Reply "interested" and I\'ll send the short presentation + '
+            "onboarding form so we can start."
         )
     if "how long" in low or "timeline" in low or "when" in low:
         return "First meetings typically book in 7-10 days after launch."

@@ -155,8 +155,7 @@ def send_async_onboarding(lead_email: str, first_name: str, company: str) -> boo
         f"\n"
         f"{SIGNATURE}"
         f"\n"
-        f"P.S. Prefer a quick call? {calendly_url()}\n"
-        f"Form again: {form}\n"
+        f"Form again (bookmark this): {form}\n"
     )
     ok = send_email(email, subject, body)
     if ok:
