@@ -1,0 +1,11 @@
+requests
+httpx
+beautifulsoup4
+gspread
+python-dotenv
+google-api-python-client
+google-auth
+google-auth-oauthlib
+flask
+cryptography
+python-whois

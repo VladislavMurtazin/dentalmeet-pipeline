@@ -1,0 +1,16 @@
+.env
+service_account.json
+client_secrets.json
+gmail_token.json
+__pycache__/
+*.pyc
+data/leads.csv
+data/dry_run.json
+data/dry_run.json.txt
+data/drafts/
+data/suppression.txt
+data/reports/
+tokens/
+targets/
+logs/
+
