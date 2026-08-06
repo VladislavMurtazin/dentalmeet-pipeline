@@ -255,14 +255,19 @@ def _append_client(ws, data: dict) -> None:
 
 
 def _confirmation_email(name: str, email: str) -> bool:
+    """Ack the form; payment instructions are sent right after separately."""
     first = (name or "").strip().split()[0] if (name or "").strip() else "there"
-    subject = "got your form — launching soon"
+    subject = "got your form — next: payment"
     body = (
         f"Hi {first},\n"
         f"\n"
-        f"Thanks for filling out the form!\n"
-        f"I'll launch your campaign within 24 hours.\n"
-        f"You'll get your first weekly report on Monday.\n"
+        f"Thanks for filling out the form — you're in.\n"
+        f"\n"
+        f"Next step is payment for the pilot. I'm sending the USDT (TRC20) "
+        f"details in the next email.\n"
+        f"\n"
+        f"As soon as payment is confirmed, I'll connect your Workspace and "
+        f"launch outreach within 24 hours.\n"
         f"\n"
         f"— Vladislav\n"
         f"DentalMeet\n"
@@ -321,16 +326,21 @@ def check_form_responses() -> dict:
             "Deal Size": _cell(row, fmap.get("deal_size")),
             "Pricing": _cell(row, fmap.get("pricing")),
             "Notes": _cell(row, fmap.get("extra")),
-            "Status": "onboarded",
+            "Status": "awaiting_payment",
             "Created": today,
         }
 
         try:
+            from .ai_reply_assistant import send_payment_instructions
+
             _append_client(clients_ws, data)
             form_ws.update_cell(i, processed_idx + 1, "Processed")
             _confirmation_email(name, email)
+            # Payment opens HERE — after brief is received, before delivery launch
+            first = (name or "").split()[0] if name else ""
+            send_payment_instructions(email, first)
             stats["processed"] += 1
-            print(f"row {i}: processed {email}")
+            print(f"row {i}: processed {email} (+ payment instructions)")
         except Exception as e:
             stats["errors"] += 1
             print(f"row {i}: error {e}")
