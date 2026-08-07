@@ -8,10 +8,9 @@ on:
     - cron: "0 16 * * 1-5"   # followup2 — weekdays 16:00 UTC
     - cron: "0 */6 * * *"    # replies — every 6 hours
     - cron: "0 */2 * * *"    # check_forms — every 2 hours
-    - cron: "0 13 * * 1-5"   # delivery send_as_client — weekdays 13:00 UTC
     - cron: "0 9 * * 1"      # weekly reports — Monday 09:00 UTC
-    - cron: "0 10 1 * *"     # monthly invoices — 1st of month 10:00 UTC
-    - cron: "0 11 * * *"     # overdue invoice reminders — daily 11:00 UTC
+    - cron: "0 9 1 * *"      # monthly invoices — 1st of month 09:00 UTC
+    - cron: "0 10 * * *"     # payment check — daily 10:00 UTC
   workflow_dispatch:
     inputs:
       job:
@@ -26,27 +25,29 @@ on:
           - followup2
           - replies
           - check_forms
-          - delivery_send
           - weekly_report
           - monthly_invoices
-          - check_overdue
+          - payment_check
           - all
 
+# Shared secrets for all jobs (per-job env can still override / extend).
 env:
   APOLLO_KEY: ${{ secrets.APOLLO_KEY }}
+  QWEN_KEY: ${{ secrets.QWEN_KEY }}
   GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
   GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
   SHEET_NAME: ${{ secrets.SHEET_NAME }}
   WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
   GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
   GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-  CALENDLY_URL: ${{ secrets.CALENDLY_URL }}
   PRESENTATION_URL: ${{ secrets.PRESENTATION_URL }}
   BRIEF_FORM_URL: ${{ secrets.BRIEF_FORM_URL }}
+  CALENDLY_URL: ${{ secrets.CALENDLY_URL }}
+  TRC20_WALLET_ADDRESS: ${{ secrets.TRC20_WALLET_ADDRESS }}
   FORM_RESPONSES_SPREADSHEET: ${{ secrets.FORM_RESPONSES_SPREADSHEET }}
   FORM_RESPONSES_WORKSHEET: ${{ secrets.FORM_RESPONSES_WORKSHEET }}
-  TRC20_WALLET_ADDRESS: ${{ secrets.TRC20_WALLET_ADDRESS }}
   GMAIL_TOKEN_FILE: gmail_token.json
+  DRY_RUN: "false"
 
 jobs:
   research:
@@ -56,22 +57,44 @@ jobs:
       (github.event_name == 'workflow_dispatch' &&
         (github.event.inputs.job == 'research' || github.event.inputs.job == 'all'))
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt
-      - run: python -m pipeline.main research
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in GOOGLE_SERVICE_ACCOUNT SHEET_NAME WORKSHEET_NAME APOLLO_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret/env: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Run research
+        run: |
+          set -euo pipefail
+          python -m pipeline.main research
         env:
           APOLLO_KEY: ${{ secrets.APOLLO_KEY }}
+          QWEN_KEY: ${{ secrets.QWEN_KEY }}
           GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
           SHEET_NAME: ${{ secrets.SHEET_NAME }}
           WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
-          GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          CALENDLY_URL: ${{ secrets.CALENDLY_URL }}
 
   send:
     name: send
@@ -80,98 +103,52 @@ jobs:
       (github.event_name == 'workflow_dispatch' &&
         (github.event.inputs.job == 'send' || github.event.inputs.job == 'all'))
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install -r requirements.txt
-      - name: Write Gmail OAuth token
-        run: echo '${{ secrets.GMAIL_TOKEN_JSON }}' > gmail_token.json
-      - run: python -m pipeline.main send --limit 5
-        env:
-          APOLLO_KEY: ${{ secrets.APOLLO_KEY }}
-          GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
-          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
-          SHEET_NAME: ${{ secrets.SHEET_NAME }}
-          WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
-          GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          CALENDLY_URL: ${{ secrets.CALENDLY_URL }}
-          GMAIL_TOKEN_FILE: gmail_token.json
 
-  followup1:
-    name: followup1
-    if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 15 * * 1-5') ||
-      (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.job == 'followup1' || github.event.inputs.job == 'all'))
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt
-      - name: Write Gmail OAuth token
-        run: echo '${{ secrets.GMAIL_TOKEN_JSON }}' > gmail_token.json
-      - run: python -m pipeline.main followup 1
-        env:
-          APOLLO_KEY: ${{ secrets.APOLLO_KEY }}
-          GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
-          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
-          SHEET_NAME: ${{ secrets.SHEET_NAME }}
-          WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
-          GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          CALENDLY_URL: ${{ secrets.CALENDLY_URL }}
-          GMAIL_TOKEN_FILE: gmail_token.json
+          cache: pip
 
-  followup2:
-    name: followup2
-    if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 16 * * 1-5') ||
-      (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.job == 'followup2' || github.event.inputs.job == 'all'))
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install -r requirements.txt
-      - name: Write Gmail OAuth token
-        run: echo '${{ secrets.GMAIL_TOKEN_JSON }}' > gmail_token.json
-      - run: python -m pipeline.main followup 2
-        env:
-          APOLLO_KEY: ${{ secrets.APOLLO_KEY }}
-          GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
-          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
-          SHEET_NAME: ${{ secrets.SHEET_NAME }}
-          WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
-          GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
-          CALENDLY_URL: ${{ secrets.CALENDLY_URL }}
-          GMAIL_TOKEN_FILE: gmail_token.json
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-  replies:
-    name: replies
-    if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 */6 * * *') ||
-      (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.job == 'replies' || github.event.inputs.job == 'all'))
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install -r requirements.txt
-      - name: Write Gmail OAuth token
-        run: echo '${{ secrets.GMAIL_TOKEN_JSON }}' > gmail_token.json
-      - run: python -m pipeline.main replies
+      - name: Write runtime secrets
+        env:
+          GMAIL_TOKEN_JSON: ${{ secrets.GMAIL_TOKEN_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GMAIL_TOKEN_JSON:-}" ]; then
+            echo "::error::Missing secret GMAIL_TOKEN_JSON (required for Gmail OAuth send)"
+            exit 1
+          fi
+          printf '%s' "$GMAIL_TOKEN_JSON" > gmail_token.json
+          test -s gmail_token.json
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in GOOGLE_SERVICE_ACCOUNT SHEET_NAME WORKSHEET_NAME GMAIL_EMAIL CALENDLY_URL; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret/env: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Send first-touch emails (limit 5)
+        run: |
+          set -euo pipefail
+          python -m pipeline.main send --limit 5
         env:
           APOLLO_KEY: ${{ secrets.APOLLO_KEY }}
+          QWEN_KEY: ${{ secrets.QWEN_KEY }}
           GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
           SHEET_NAME: ${{ secrets.SHEET_NAME }}
@@ -182,6 +159,176 @@ jobs:
           PRESENTATION_URL: ${{ secrets.PRESENTATION_URL }}
           BRIEF_FORM_URL: ${{ secrets.BRIEF_FORM_URL }}
           GMAIL_TOKEN_FILE: gmail_token.json
+          DRY_RUN: "false"
+
+  followup1:
+    name: followup1
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 15 * * 1-5') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.job == 'followup1' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Write runtime secrets
+        env:
+          GMAIL_TOKEN_JSON: ${{ secrets.GMAIL_TOKEN_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GMAIL_TOKEN_JSON:-}" ]; then
+            echo "::error::Missing secret GMAIL_TOKEN_JSON"
+            exit 1
+          fi
+          printf '%s' "$GMAIL_TOKEN_JSON" > gmail_token.json
+          test -s gmail_token.json
+
+      - name: Send follow-up wave 1
+        run: |
+          set -euo pipefail
+          python -m pipeline.main followup 1
+        env:
+          APOLLO_KEY: ${{ secrets.APOLLO_KEY }}
+          QWEN_KEY: ${{ secrets.QWEN_KEY }}
+          GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
+          GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          CALENDLY_URL: ${{ secrets.CALENDLY_URL }}
+          PRESENTATION_URL: ${{ secrets.PRESENTATION_URL }}
+          BRIEF_FORM_URL: ${{ secrets.BRIEF_FORM_URL }}
+          GMAIL_TOKEN_FILE: gmail_token.json
+          DRY_RUN: "false"
+
+  followup2:
+    name: followup2
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 16 * * 1-5') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.job == 'followup2' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Write runtime secrets
+        env:
+          GMAIL_TOKEN_JSON: ${{ secrets.GMAIL_TOKEN_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GMAIL_TOKEN_JSON:-}" ]; then
+            echo "::error::Missing secret GMAIL_TOKEN_JSON"
+            exit 1
+          fi
+          printf '%s' "$GMAIL_TOKEN_JSON" > gmail_token.json
+          test -s gmail_token.json
+
+      - name: Send follow-up wave 2
+        run: |
+          set -euo pipefail
+          python -m pipeline.main followup 2
+        env:
+          APOLLO_KEY: ${{ secrets.APOLLO_KEY }}
+          QWEN_KEY: ${{ secrets.QWEN_KEY }}
+          GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
+          GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          CALENDLY_URL: ${{ secrets.CALENDLY_URL }}
+          PRESENTATION_URL: ${{ secrets.PRESENTATION_URL }}
+          BRIEF_FORM_URL: ${{ secrets.BRIEF_FORM_URL }}
+          GMAIL_TOKEN_FILE: gmail_token.json
+          DRY_RUN: "false"
+
+  replies:
+    name: replies
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 */6 * * *') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.job == 'replies' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Write runtime secrets
+        env:
+          GMAIL_TOKEN_JSON: ${{ secrets.GMAIL_TOKEN_JSON }}
+        run: |
+          set -euo pipefail
+          # OAuth token optional if IMAP app password is set
+          if [ -n "${GMAIL_TOKEN_JSON:-}" ]; then
+            printf '%s' "$GMAIL_TOKEN_JSON" > gmail_token.json
+          fi
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in GOOGLE_SERVICE_ACCOUNT SHEET_NAME GMAIL_EMAIL GMAIL_APP_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret/env: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Check inbox replies
+        run: |
+          set -euo pipefail
+          python -m pipeline.main replies
+        env:
+          APOLLO_KEY: ${{ secrets.APOLLO_KEY }}
+          QWEN_KEY: ${{ secrets.QWEN_KEY }}
+          GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
+          GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          CALENDLY_URL: ${{ secrets.CALENDLY_URL }}
+          PRESENTATION_URL: ${{ secrets.PRESENTATION_URL }}
+          BRIEF_FORM_URL: ${{ secrets.BRIEF_FORM_URL }}
+          TRC20_WALLET_ADDRESS: ${{ secrets.TRC20_WALLET_ADDRESS }}
+          GMAIL_TOKEN_FILE: gmail_token.json
 
   check_forms:
     name: check_forms
@@ -190,17 +337,49 @@ jobs:
       (github.event_name == 'workflow_dispatch' &&
         (github.event.inputs.job == 'check_forms' || github.event.inputs.job == 'all'))
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt
-      - name: Write Gmail OAuth token
-        run: echo '${{ secrets.GMAIL_TOKEN_JSON }}' > gmail_token.json
-      - run: python -m pipeline.main check_forms
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Write runtime secrets
+        env:
+          GMAIL_TOKEN_JSON: ${{ secrets.GMAIL_TOKEN_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -n "${GMAIL_TOKEN_JSON:-}" ]; then
+            printf '%s' "$GMAIL_TOKEN_JSON" > gmail_token.json
+          fi
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in GOOGLE_SERVICE_ACCOUNT SHEET_NAME; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret/env: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Ingest form responses
+        run: |
+          set -euo pipefail
+          python -m pipeline.main check_forms
         env:
           APOLLO_KEY: ${{ secrets.APOLLO_KEY }}
+          QWEN_KEY: ${{ secrets.QWEN_KEY }}
           GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
           SHEET_NAME: ${{ secrets.SHEET_NAME }}
@@ -212,55 +391,8 @@ jobs:
           BRIEF_FORM_URL: ${{ secrets.BRIEF_FORM_URL }}
           FORM_RESPONSES_SPREADSHEET: ${{ secrets.FORM_RESPONSES_SPREADSHEET }}
           FORM_RESPONSES_WORKSHEET: ${{ secrets.FORM_RESPONSES_WORKSHEET }}
+          TRC20_WALLET_ADDRESS: ${{ secrets.TRC20_WALLET_ADDRESS }}
           GMAIL_TOKEN_FILE: gmail_token.json
-
-  delivery_send:
-    name: delivery_send
-    if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 13 * * 1-5') ||
-      (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.job == 'delivery_send' || github.event.inputs.job == 'all'))
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install -r requirements.txt
-      - name: Write secrets
-        run: |
-          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT }}' > service_account.json
-          echo '${{ secrets.GMAIL_TOKEN_JSON }}' > gmail_token.json
-          mkdir -p tokens
-          # Optional: restore encrypted client tokens archive later
-      - name: Run delivery for active clients
-        env:
-          APOLLO_KEY: ${{ secrets.APOLLO_KEY }}
-          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
-          SHEET_NAME: ${{ secrets.SHEET_NAME }}
-          GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
-          GMAIL_TOKEN_FILE: gmail_token.json
-          TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
-          DRY_RUN: ${{ secrets.DRY_RUN }}
-        run: |
-          python - <<'PY'
-          from delivery.weekly_report import active_clients
-          import subprocess, sys
-          clients = active_clients()
-          print("active clients:", clients)
-          for email in clients:
-              # only run if targets exist
-              from pathlib import Path
-              safe = email.replace("@", "_at_")
-              if not Path(f"targets/{safe}_targets.csv").exists():
-                  print("skip (no targets):", email)
-                  continue
-              r = subprocess.run(
-                  [sys.executable, "-m", "delivery.send_as_client", "run", email, "--limit", "25"],
-                  check=False,
-              )
-              print(email, "exit", r.returncode)
-          PY
 
   weekly_report:
     name: weekly_report
@@ -269,71 +401,161 @@ jobs:
       (github.event_name == 'workflow_dispatch' &&
         (github.event.inputs.job == 'weekly_report' || github.event.inputs.job == 'all'))
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt
-      - name: Write Gmail OAuth token
-        run: echo '${{ secrets.GMAIL_TOKEN_JSON }}' > gmail_token.json
-      - run: python -m delivery.weekly_report send_all
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Write runtime secrets
+        env:
+          GMAIL_TOKEN_JSON: ${{ secrets.GMAIL_TOKEN_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GMAIL_TOKEN_JSON:-}" ]; then
+            echo "::error::Missing secret GMAIL_TOKEN_JSON"
+            exit 1
+          fi
+          printf '%s' "$GMAIL_TOKEN_JSON" > gmail_token.json
+          test -s gmail_token.json
+
+      - name: Send weekly reports
+        run: |
+          set -euo pipefail
+          python -m delivery.weekly_report send_all
         env:
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
           SHEET_NAME: ${{ secrets.SHEET_NAME }}
           GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           GMAIL_TOKEN_FILE: gmail_token.json
           TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
+          DRY_RUN: "false"
 
   monthly_invoices:
     name: monthly_invoices
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 10 1 * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 9 1 * *') ||
       (github.event_name == 'workflow_dispatch' &&
         (github.event.inputs.job == 'monthly_invoices' || github.event.inputs.job == 'all'))
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt
-      - name: Write secrets
+          cache: pip
+
+      - name: Install dependencies
         run: |
-          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT }}' > service_account.json
-          echo '${{ secrets.GMAIL_TOKEN_JSON }}' > gmail_token.json
-      - run: python -m delivery.billing send_all --period month
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Write runtime secrets
+        env:
+          GMAIL_TOKEN_JSON: ${{ secrets.GMAIL_TOKEN_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GMAIL_TOKEN_JSON:-}" ]; then
+            echo "::error::Missing secret GMAIL_TOKEN_JSON"
+            exit 1
+          fi
+          printf '%s' "$GMAIL_TOKEN_JSON" > gmail_token.json
+          test -s gmail_token.json
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in GOOGLE_SERVICE_ACCOUNT SHEET_NAME GMAIL_EMAIL TRC20_WALLET_ADDRESS; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret/env: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Send monthly invoices
+        run: |
+          set -euo pipefail
+          python -m delivery.billing send_all --period month
         env:
           APOLLO_KEY: ${{ secrets.APOLLO_KEY }}
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
           SHEET_NAME: ${{ secrets.SHEET_NAME }}
           GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
-          GMAIL_TOKEN_FILE: gmail_token.json
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           TRC20_WALLET_ADDRESS: ${{ secrets.TRC20_WALLET_ADDRESS }}
-          TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
+          CALENDLY_URL: ${{ secrets.CALENDLY_URL }}
           CALENDLY_API_TOKEN: ${{ secrets.CALENDLY_API_TOKEN }}
+          GMAIL_TOKEN_FILE: gmail_token.json
+          TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
+          DRY_RUN: "false"
 
-  check_overdue:
-    name: check_overdue
+  payment_check:
+    name: payment_check
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 11 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 10 * * *') ||
       (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.job == 'check_overdue' || github.event.inputs.job == 'all'))
+        (github.event.inputs.job == 'payment_check' || github.event.inputs.job == 'all'))
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt
-      - name: Write secrets
+          cache: pip
+
+      - name: Install dependencies
         run: |
-          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT }}' > service_account.json
-          echo '${{ secrets.GMAIL_TOKEN_JSON }}' > gmail_token.json
-      - run: python -m delivery.payment_tracker check_overdue
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Write runtime secrets
+        env:
+          GMAIL_TOKEN_JSON: ${{ secrets.GMAIL_TOKEN_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -n "${GMAIL_TOKEN_JSON:-}" ]; then
+            printf '%s' "$GMAIL_TOKEN_JSON" > gmail_token.json
+          fi
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in GOOGLE_SERVICE_ACCOUNT SHEET_NAME TRC20_WALLET_ADDRESS; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret/env: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Check unpaid / overdue invoices
+        run: |
+          set -euo pipefail
+          python -m delivery.payment_tracker check_overdue
         env:
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
           SHEET_NAME: ${{ secrets.SHEET_NAME }}
           GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
-          GMAIL_TOKEN_FILE: gmail_token.json
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           TRC20_WALLET_ADDRESS: ${{ secrets.TRC20_WALLET_ADDRESS }}
+          GMAIL_TOKEN_FILE: gmail_token.json
+          DRY_RUN: "false"
