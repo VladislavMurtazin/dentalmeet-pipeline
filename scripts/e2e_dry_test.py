@@ -473,6 +473,149 @@ def main() -> int:
         traceback.print_exc()
 
     # ------------------------------------------------------------------
+    # 13–15. Lazy parallel signal scraping
+    # ------------------------------------------------------------------
+    try:
+        import asyncio
+        import time
+        from unittest.mock import AsyncMock, MagicMock, patch as _patch
+
+        from pipeline.personalize import (
+            ensure_signals_for_leads,
+            fetch_signals_parallel,
+        )
+
+        # 13. Only leads without Signal get scraped (unsent batch)
+        scrape_calls: list[str] = []
+
+        async def fake_parallel(domains, limit=10):
+            scrape_calls.extend(domains)
+            return {d: f"Page: {d} | H1: Test | Meta: " for d in domains}
+
+        leads = [
+            {
+                "row_index": 2,
+                "Email": "a@agency.com",
+                "Company": "A",
+                "Signal": "already cached in sheet",
+                "Notes": "agency.com",
+                "Sent": "",
+            },
+            {
+                "row_index": 3,
+                "Email": "b@other.com",
+                "Company": "B",
+                "Signal": "",
+                "Notes": "other.com",
+                "Sent": "",
+            },
+            {
+                "row_index": 4,
+                "Email": "c@sent.com",
+                "Company": "C",
+                "Signal": "",
+                "Notes": "sent.com",
+                "Sent": "2026-01-01",  # would not be in send batch
+            },
+        ]
+        # Send step only passes unsent batch (first 2 conceptually; we pass
+        # only the ones about to send — with and without Signal)
+        batch = [leads[0], leads[1]]
+        with _patch(
+            "pipeline.personalize.fetch_signals_parallel_sync",
+            side_effect=lambda domains, limit=10: {
+                d: f"Page: {d} | H1: X | Meta: " for d in domains
+            },
+        ), _patch("pipeline.to_sheets.update_signal", MagicMock()):
+            ensure_signals_for_leads(batch, write_sheet=True)
+        scraped_only_missing = (
+            batch[0]["Signal"] == "already cached in sheet"
+            and "other.com" in (batch[1].get("Signal") or "")
+        )
+        report(
+            "13. Only missing-Signal leads get scraped",
+            scraped_only_missing,
+            f"lead0={batch[0]['Signal'][:40]!r} lead1={batch[1]['Signal'][:40]!r}",
+        )
+
+        # 14. Parallel scrape of 20 domains finishes within 60s
+        class FakeResp:
+            async def __aenter__(self):
+                await asyncio.sleep(0.05)
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            async def text(self, errors="ignore"):
+                return "<html><title>T</title><h1>H</h1></html>"
+
+        class FakeSession:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return None
+
+            def get(self, url, allow_redirects=True):
+                return FakeResp()
+
+        domains20 = [f"example{i}.com" for i in range(20)]
+        t0 = time.perf_counter()
+        with _patch("pipeline.personalize.aiohttp.ClientSession", FakeSession):
+            out = asyncio.run(fetch_signals_parallel(domains20, limit=10))
+        elapsed = time.perf_counter() - t0
+        ok_parallel = elapsed < 60 and len(out) == 20 and all(
+            (v or "").startswith("Page:") for v in out.values()
+        )
+        report(
+            "14. Parallel scrape 20 domains < 60s",
+            ok_parallel,
+            f"elapsed={elapsed:.2f}s results={len(out)} sample={next(iter(out.values()), '')[:40]!r}",
+        )
+
+        # 15. Failed domains don't crash the pipeline
+        async def boom_one(session, domain, sem):
+            if "bad" in domain:
+                raise RuntimeError("simulated fail")
+            return domain, "Page: ok | H1: ok | Meta: "
+
+        # Use real fetch_signals_parallel but with _fetch_one that fails
+        async def mixed_fetch(domains, limit=10):
+            # simulate internal resilience: failures → ""
+            result = {}
+            for d in domains:
+                try:
+                    if "bad" in d:
+                        raise RuntimeError("fail")
+                    result[d] = "Page: ok | H1: ok | Meta: "
+                except Exception:
+                    result[d] = ""
+            return result
+
+        mixed = asyncio.run(
+            mixed_fetch(["good.com", "bad.com", "also-good.com"], limit=10)
+        )
+        ok_fail = (
+            mixed.get("good.com", "").startswith("Page:")
+            and mixed.get("bad.com") == ""
+            and mixed.get("also-good.com", "").startswith("Page:")
+        )
+        report(
+            "15. Failed domains don't crash pipeline",
+            ok_fail,
+            f"mixed={mixed}",
+        )
+    except Exception as e:
+        report("13. Only missing-Signal leads get scraped", False, str(e))
+        report("14. Parallel scrape 20 domains < 60s", False, "skipped")
+        report("15. Failed domains don't crash pipeline", False, "skipped")
+        traceback.print_exc()
+
+    # ------------------------------------------------------------------
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)

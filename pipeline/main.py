@@ -23,25 +23,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from .personalize import fetch_signal, parse_signal
+from .personalize import parse_signal
 from .research import find_agencies
 from .to_sheets import add_row
 
 
 def collect_leads(page: int = 1, require_email: bool = True) -> list[dict]:
-    """Apollo/CSV people + website signals (opener filled later by agent)."""
+    """Apollo/CSV people — no website scraping (lazy at send time)."""
     people = find_agencies(page=page, require_email=require_email)
     rows = []
     for person in people:
         org = person.get("organization") or {}
         domain = (org.get("primary_domain") or "").strip()
-        signal = fetch_signal(f"https://{domain}") if domain else ""
         rows.append(
             {
                 "person": person,
                 "domain": domain,
-                "signal": signal,
-                "signal_parts": parse_signal(signal),
+                "signal": "",
+                "signal_parts": parse_signal(""),
                 "opener": "",
             }
         )

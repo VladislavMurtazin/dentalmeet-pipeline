@@ -100,8 +100,20 @@ def _pad12(record: list[str]) -> list[str]:
     return row
 
 
-def add_row(person: dict, opener: str) -> bool:
-    """Write one lead into A..L at the next free row. Skip dup emails."""
+SIGNAL_COL = HEADERS.index("Signal") + 1  # 1-based
+
+
+def update_signal(row_index: int, signal: str) -> None:
+    """Write Signal column for an existing Agencies row."""
+    ws = _ws_cached()
+    ws.update_cell(int(row_index), SIGNAL_COL, signal or "")
+
+
+def add_row(person: dict, opener: str = "") -> bool:
+    """Write one lead into A..L at the next free row. Skip dup emails.
+
+    ``opener`` maps to the Signal column; leave empty for lazy scrape at send.
+    """
     email = (person.get("email") or "").strip()
     if not email or not is_email(email):
         print(f"skip (bad email): {email!r}")

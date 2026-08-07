@@ -1,7 +1,8 @@
 """Find agency founders via Apollo API or local CSV fallback.
 
-Daily rotation: keyword by weekday, geography by week number, pagination
-tracked in data/research_state.json so each run surfaces NEW leads.
+Daily run: 5 broad US keyword variants (up to 3 pages × 100 each),
+optional international fallback if US yield is low, then dedupe and
+return only NEW leads vs Agencies sheet / research_state.json.
 """
 
 from __future__ import annotations
@@ -9,7 +10,8 @@ from __future__ import annotations
 import csv
 import json
 import os
-from datetime import date, timedelta
+import time
+from datetime import date
 from pathlib import Path
 
 import requests
@@ -33,98 +35,124 @@ CSV_PATH = ROOT / "data" / "leads.csv"
 STATE_PATH = ROOT / "data" / "research_state.json"
 APOLLO_BASE = "https://api.apollo.io/api/v1"
 
-# Monday=0 … Sunday=6
-KEYWORDS_BY_WEEKDAY = {
-    0: "dental marketing",
-    1: "dental SEO",
-    2: "dental web design",
-    3: "dentist lead generation",
-    4: "dental practice marketing",
-    5: "orthodontic marketing",
-    6: "cosmetic dentist marketing",
-}
-KEYWORD_VARIANTS = [KEYWORDS_BY_WEEKDAY[i] for i in range(7)]
-
-# Week 1→US, 2→Canada, 3→Australia, 4→UK (then cycle)
-REGIONS = [
-    ("United States", "US"),
-    ("Canada", "Canada"),
-    ("Australia", "Australia"),
-    ("United Kingdom", "UK"),
+PERSON_TITLES = [
+    "Founder",
+    "CEO",
+    "Owner",
+    "President",
+    "Director",
+    "Co-Founder",
+    "Managing Director",
 ]
 
-DEFAULT_STATE = {
-    "last_page": 0,
-    "last_seen_ids": [],
-    "keyword_offset": 0,
-    "last_keyword": "",
-    "last_region": "",
-}
+# Variant 5: healthcare marketing + dental-leaning titles
+DENTAL_TITLES = PERSON_TITLES + [
+    "Dental Marketing Director",
+    "Dental Marketing Manager",
+    "VP of Marketing",
+    "Head of Marketing",
+]
 
-MAX_SEEN_IDS = 500
+EMPLOYEE_RANGES = ["1-10", "11-50", "51-200"]
+US_LOCATION = ["United States"]
+INTL_LOCATIONS = ["United Kingdom", "Canada", "Australia"]
+
+PER_PAGE = 100
+MAX_PAGES = 3
+US_MIN_HITS_BEFORE_INTL = 20
+MAX_SEEN_IDS = 5000
+NEW_LEADS_CAP = 100  # max NEW leads returned / added per research run
 
 
-def get_daily_search_params(day_of_year: int) -> dict:
-    """Return Apollo filters for a given day-of-year (1–365/366).
+def get_daily_search_variants(day_of_year: int | None = None) -> list[dict]:
+    """Return the 5 broad US search variants (day_of_year unused — fixed set).
 
-    Keyword rotates by weekday; geography by ISO week number (4-week cycle).
+    Each item has q_keywords, organization_locations, person_titles, region label.
     """
-    year = date.today().year
-    # Clamp / wrap into a valid date for the current year
-    doy = max(1, int(day_of_year))
-    try:
-        d = date(year, 1, 1) + timedelta(days=doy - 1)
-        if d.year != year:
-            d = date(year, 12, 31)
-    except OverflowError:
-        d = date(year, 12, 31)
-
-    weekday = d.weekday()  # Mon=0
-    week = d.isocalendar()[1]
-    loc_name, loc_code = REGIONS[(week - 1) % len(REGIONS)]
-
-    return {
-        "q_keywords": KEYWORDS_BY_WEEKDAY[weekday],
-        "organization_locations": [loc_name],
-        "region_code": loc_code,
-        "weekday": weekday,
-        "week": week,
-        "person_titles": ["Founder", "CEO", "Owner", "President"],
-        "organization_num_employees_ranges": ["1-10", "11-50", "51-200"],
+    _ = day_of_year  # kept for call-site compat
+    base = {
+        "organization_locations": list(US_LOCATION),
+        "person_titles": list(PERSON_TITLES),
+        "email_status": ["verified"],
+        "region": "US",
     }
+    return [
+        {**base, "q_keywords": "dental marketing"},
+        {**base, "q_keywords": "dental SEO"},
+        {**base, "q_keywords": "dentist marketing"},
+        {**base, "q_keywords": "dental web design"},
+        {
+            **base,
+            "q_keywords": "healthcare marketing",
+            "person_titles": list(DENTAL_TITLES),
+        },
+    ]
+
+
+def get_international_variant() -> dict:
+    """Optional 6th variant when US yield is low."""
+    return {
+        "q_keywords": "dental marketing agency",
+        "organization_locations": list(INTL_LOCATIONS),
+        "person_titles": list(PERSON_TITLES),
+        "email_status": ["verified"],
+        "region": "UK/CA/AU",
+    }
+
+
+def get_daily_search_params(day_of_year: int | None = None) -> dict:
+    """Back-compat: first US variant expanded."""
+    v = get_daily_search_variants(day_of_year)[0]
+    return {
+        "q_keywords": v["q_keywords"],
+        "organization_locations": list(v["organization_locations"]),
+        "region_code": "US",
+        "person_titles": list(v["person_titles"]),
+        "email_status": list(v.get("email_status") or ["verified"]),
+        "organization_num_employees_ranges": list(EMPLOYEE_RANGES),
+    }
+
+
+def _variant_label(variant: dict) -> str:
+    kw = (variant.get("q_keywords") or "").strip()
+    region = (variant.get("region") or "US").strip()
+    return f"{kw}, {region}"
 
 
 def _load_state() -> dict:
     if not STATE_PATH.exists():
-        return dict(DEFAULT_STATE)
+        return {"last_seen_ids": []}
     try:
         raw = json.loads(STATE_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return dict(DEFAULT_STATE)
-    state = dict(DEFAULT_STATE)
-    state.update(raw or {})
-    if not isinstance(state.get("last_seen_ids"), list):
-        state["last_seen_ids"] = []
-    try:
-        state["last_page"] = int(state.get("last_page") or 0)
-    except (TypeError, ValueError):
-        state["last_page"] = 0
-    try:
-        state["keyword_offset"] = int(state.get("keyword_offset") or 0) % len(
-            KEYWORD_VARIANTS
-        )
-    except (TypeError, ValueError):
-        state["keyword_offset"] = 0
-    return state
+        return {"last_seen_ids": []}
+    if not isinstance(raw, dict):
+        return {"last_seen_ids": []}
+    if not isinstance(raw.get("last_seen_ids"), list):
+        raw["last_seen_ids"] = []
+    return raw
 
 
-def _save_state(state: dict) -> None:
+def _save_run_state(
+    *,
+    variants_run: int,
+    total_hits: int,
+    new_added: int,
+    duplicates_skipped: int,
+    last_seen_ids: list[str],
+) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ids = state.get("last_seen_ids") or []
-    if len(ids) > MAX_SEEN_IDS:
-        state["last_seen_ids"] = ids[-MAX_SEEN_IDS:]
+    ids = last_seen_ids[-MAX_SEEN_IDS:]
+    payload = {
+        "date": date.today().isoformat(),
+        "variants_run": variants_run,
+        "total_hits": total_hits,
+        "new_added": new_added,
+        "duplicates_skipped": duplicates_skipped,
+        "last_seen_ids": ids,
+    }
     STATE_PATH.write_text(
-        json.dumps(state, indent=2, ensure_ascii=False) + "\n",
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
 
@@ -149,31 +177,93 @@ def _headers() -> dict:
 
 
 def _search_apollo(
+    *,
     page: int,
     q_keywords: str,
     organization_locations: list[str],
     person_titles: list[str] | None = None,
+    email_status: list[str] | None = None,
     organization_num_employees_ranges: list[str] | None = None,
-    per_page: int = 25,
+    per_page: int = PER_PAGE,
 ) -> list[dict]:
-    """People API search (no emails on this endpoint)."""
+    """People API search (mixed_people/api_search)."""
+    payload: dict = {
+        "q_keywords": q_keywords,
+        "person_titles": person_titles or list(PERSON_TITLES),
+        "organization_locations": organization_locations,
+        "organization_num_employees_ranges": organization_num_employees_ranges
+        or list(EMPLOYEE_RANGES),
+        "page": page,
+        "per_page": per_page,
+    }
+    if email_status:
+        payload["contact_email_status"] = email_status
+        payload["email_status"] = email_status
+
     r = requests.post(
         f"{APOLLO_BASE}/mixed_people/api_search",
         headers=_headers(),
-        json={
-            "q_keywords": q_keywords,
-            "person_titles": person_titles
-            or ["Founder", "CEO", "Owner", "President"],
-            "organization_locations": organization_locations,
-            "organization_num_employees_ranges": organization_num_employees_ranges
-            or ["1-10", "11-50", "51-200"],
-            "page": page,
-            "per_page": per_page,
-        },
-        timeout=30,
+        json=payload,
+        timeout=60,
     )
     r.raise_for_status()
-    return r.json().get("people", [])
+    return r.json().get("people", []) or []
+
+
+def _search_variant_pages(variant: dict) -> tuple[list[dict], list[tuple[int, int]]]:
+    """Fetch up to MAX_PAGES for a variant. Returns (people, [(page, count), ...])."""
+    all_people: list[dict] = []
+    seen_ids: set[str] = set()
+    page_counts: list[tuple[int, int]] = []
+
+    for page in range(1, MAX_PAGES + 1):
+        try:
+            batch = _search_apollo(
+                page=page,
+                q_keywords=variant["q_keywords"],
+                organization_locations=list(variant["organization_locations"]),
+                person_titles=list(variant.get("person_titles") or PERSON_TITLES),
+                email_status=list(variant.get("email_status") or ["verified"]),
+                per_page=PER_PAGE,
+            )
+        except Exception as e:
+            print(
+                f"  WARN page {page} failed: {e}",
+                flush=True,
+            )
+            page_counts.append((page, 0))
+            break
+
+        page_counts.append((page, len(batch)))
+        if not batch:
+            break
+
+        for p in batch:
+            pid = str(p.get("id") or "").strip()
+            if pid and pid in seen_ids:
+                continue
+            if pid:
+                seen_ids.add(pid)
+            all_people.append(p)
+
+        if len(batch) < PER_PAGE:
+            # Last page of results
+            break
+        time.sleep(0.35)
+
+    return all_people, page_counts
+
+
+def _format_page_summary(page_counts: list[tuple[int, int]]) -> str:
+    if not page_counts:
+        return "0 hits"
+    counts = list(page_counts)
+    # Drop trailing empty page used only as stop signal
+    if len(counts) > 1 and counts[-1][1] == 0:
+        counts = counts[:-1]
+    parts = [f"page {p}={n}" for p, n in counts]
+    total = sum(n for _, n in counts)
+    return f"{', '.join(parts)} → {total} hits"
 
 
 def _org_domain(name: str) -> str:
@@ -233,7 +323,7 @@ def _normalize_search_person(p: dict) -> dict:
     org = p.get("organization") or {}
     last = p.get("last_name") or ""
     if not last and p.get("last_name_obfuscated"):
-        last = p["last_name_obfuscated"]  # e.g. Mo***n until enrichment
+        last = p["last_name_obfuscated"]
     return {
         "id": p.get("id"),
         "first_name": p.get("first_name", ""),
@@ -252,17 +342,15 @@ def _normalize_search_person(p: dict) -> dict:
 
 
 def _enrich_people(found: list[dict]) -> list[dict]:
-    """Resolve domains + try email enrichment for a search page."""
-    found = _attach_domains(found)
+    """Try email enrichment (domains filled later for NEW leads only)."""
+    if not found:
+        return []
 
-    enriched = _enrich_batch(found[:10])  # first chunk probes scope
+    enriched = _enrich_batch(found[:10])
     if enriched is None:
         print(
             "WARN: Apollo API key cannot access people/bulk_match (emails).\n"
-            "      In Apollo → Settings → Integrations → API, create a Master key\n"
-            "      (or enable people/match + people/bulk_match), then update APOLLO_KEY.\n"
-            "      Until then: export People CSV from Apollo UI → data/leads.csv\n"
-            "      Returning search hits without emails (domains filled)."
+            "      Returning search hits without emails."
         )
         return [_normalize_search_person(p) for p in found]
 
@@ -270,10 +358,14 @@ def _enrich_people(found: list[dict]) -> list[dict]:
     for i in range(10, len(found), 10):
         batch = _enrich_batch(found[i : i + 10]) or []
         people.extend(batch)
+        time.sleep(0.2)
     for p in people:
         status = (p.get("email_status") or "").lower()
         p["verified_email"] = status == "verified" or bool(p.get("verified_email"))
-    return _attach_domains(people)
+        # Ensure organization dict exists
+        if not isinstance(p.get("organization"), dict):
+            p["organization"] = p.get("organization") or {}
+    return people
 
 
 def _normalize_headers(fieldnames: list[str]) -> dict[str, str]:
@@ -323,9 +415,13 @@ def _filter_new_leads(
     *,
     sheet_emails: set[str],
     seen_ids: set[str],
+    run_emails: set[str],
     require_email: bool,
 ) -> tuple[list[dict], int]:
-    """Keep only leads not already in sheet / last_seen_ids. Returns (new, dupes)."""
+    """Keep only leads not already in sheet / last_seen_ids / this run.
+
+    Returns (new_people, duplicates_skipped).
+    """
     new_people: list[dict] = []
     dupes = 0
     for p in people:
@@ -335,7 +431,7 @@ def _filter_new_leads(
         if pid and pid in seen_ids:
             dupes += 1
             continue
-        if email and email in sheet_emails:
+        if email and (email in sheet_emails or email in run_emails):
             dupes += 1
             if pid:
                 seen_ids.add(pid)
@@ -346,24 +442,54 @@ def _filter_new_leads(
         new_people.append(p)
         if pid:
             seen_ids.add(pid)
+        if email:
+            run_emails.add(email)
+            sheet_emails.add(email)
 
     return new_people, dupes
 
 
+def _run_one_variant(
+    index: int,
+    variant: dict,
+    *,
+    sheet_emails: set[str],
+    seen_ids: set[str],
+    run_emails: set[str],
+    require_email: bool,
+) -> tuple[list[dict], int, int]:
+    """Search+enrich one variant. Returns (new_people, hits, dupes_in_variant)."""
+    label = _variant_label(variant)
+    found, page_counts = _search_variant_pages(variant)
+    hits = len(found)
+    pages_txt = _format_page_summary(page_counts)
+    print(f"Variant {index} ({label}): {pages_txt}", flush=True)
+
+    if not found:
+        return [], 0, 0
+
+    people = _enrich_people(found)
+    new_people, dupes = _filter_new_leads(
+        people,
+        sheet_emails=sheet_emails,
+        seen_ids=seen_ids,
+        run_emails=run_emails,
+        require_email=require_email,
+    )
+    if new_people:
+        _attach_domains(new_people)
+    return new_people, hits, dupes
+
+
 def find_agencies(page: int = 1, require_email: bool = True) -> list[dict]:
-    """Return NEW people from Apollo (daily rotation) or local CSV.
+    """Return NEW people from Apollo (broad US multi-search) or CSV.
 
-    Apollo path:
-      - loads data/research_state.json
-      - uses get_daily_search_params(today)
-      - searches page = last_page + 1 (per_page=25)
-      - if empty, resets to page 1 and tries the next keyword variant
-      - dedupes by sheet email + Apollo person_id in last_seen_ids
-      - persists updated state
-
-    ``page`` is kept for CLI compat; Apollo pagination is driven by state
-    (explicit page>1 can force a one-off page when state last_page is 0).
+    - 5 US variants, up to 3 pages × 100 each
+    - optional intl variant if US total hits < 20
+    - dedupe by email (+ Apollo id / sheet)
+    - persist research_state.json run summary
     """
+    _ = page  # pagination is internal (pages 1–3 per variant)
     apollo_key = os.environ.get("APOLLO_KEY", "").strip()
     if not apollo_key:
         people = _from_csv()
@@ -372,86 +498,92 @@ def find_agencies(page: int = 1, require_email: bool = True) -> list[dict]:
         return people
 
     state = _load_state()
-    doy = date.today().timetuple().tm_yday
-    base = get_daily_search_params(doy)
     sheet_emails = _existing_sheet_emails()
     seen_ids = {str(x) for x in (state.get("last_seen_ids") or []) if x}
+    run_emails: set[str] = set()
 
-    keyword_offset = int(state.get("keyword_offset") or 0) % len(KEYWORD_VARIANTS)
-    used_keyword = base["q_keywords"]
-    used_region = base["region_code"]
-    used_page = 1
-    found: list[dict] = []
+    variants = get_daily_search_variants()
+    print(
+        f"Daily broad US search: {len(variants)} variants "
+        f"(per_page={PER_PAGE}, max_pages={MAX_PAGES})",
+        flush=True,
+    )
 
-    for attempt in range(len(KEYWORD_VARIANTS)):
-        kw_idx = (base["weekday"] + keyword_offset) % len(KEYWORD_VARIANTS)
-        keyword = KEYWORD_VARIANTS[kw_idx]
-        locations = list(base["organization_locations"])
-        region_code = base["region_code"]
+    all_new: list[dict] = []
+    total_hits = 0
+    total_dupes = 0
+    us_hits = 0
 
-        if attempt == 0:
-            # Prefer state pagination; allow CLI --page override when > 1
-            next_page = int(state.get("last_page") or 0) + 1
-            if page and int(page) > 1 and int(state.get("last_page") or 0) == 0:
-                next_page = int(page)
-        else:
-            next_page = 1
+    for i, variant in enumerate(variants, start=1):
+        new_people, hits, dupes = _run_one_variant(
+            i,
+            variant,
+            sheet_emails=sheet_emails,
+            seen_ids=seen_ids,
+            run_emails=run_emails,
+            require_email=require_email,
+        )
+        us_hits += hits
+        total_hits += hits
+        total_dupes += dupes
+        all_new.extend(new_people)
+        time.sleep(0.35)
 
+    variants_run = len(variants)
+    if us_hits < US_MIN_HITS_BEFORE_INTL:
+        intl = get_international_variant()
+        variants_run += 1
         print(
-            f"Apollo search attempt {attempt + 1}: "
-            f"keyword={keyword!r} region={region_code!r} page={next_page}",
+            f"US hits={us_hits} < {US_MIN_HITS_BEFORE_INTL} → running international variant",
             flush=True,
         )
-        found = _search_apollo(
-            page=next_page,
-            q_keywords=keyword,
-            organization_locations=locations,
-            person_titles=base["person_titles"],
-            organization_num_employees_ranges=base[
-                "organization_num_employees_ranges"
-            ],
-            per_page=25,
+        new_people, hits, dupes = _run_one_variant(
+            variants_run,
+            intl,
+            sheet_emails=sheet_emails,
+            seen_ids=seen_ids,
+            run_emails=run_emails,
+            require_email=require_email,
         )
+        total_hits += hits
+        total_dupes += dupes
+        all_new.extend(new_people)
 
-        if found:
-            used_keyword = keyword
-            used_region = region_code
-            used_page = next_page
-            state["last_page"] = next_page
-            state["keyword_offset"] = keyword_offset
-            state["last_keyword"] = keyword
-            state["last_region"] = region_code
-            break
+    # Cross-check: final email dedup (safety)
+    final: list[dict] = []
+    seen_final: set[str] = set()
+    for p in all_new:
+        email = (p.get("email") or "").strip().lower()
+        key = email or str(p.get("id") or "")
+        if not key or key in seen_final:
+            if key in seen_final:
+                total_dupes += 1
+            continue
+        seen_final.add(key)
+        final.append(p)
 
-        # Empty page → reset pagination and rotate keyword
-        print(f"  empty page; rotating keyword (offset {keyword_offset} → ", end="")
-        keyword_offset = (keyword_offset + 1) % len(KEYWORD_VARIANTS)
-        print(f"{keyword_offset})", flush=True)
-        state["last_page"] = 0
-        state["keyword_offset"] = keyword_offset
-    else:
-        _save_state(state)
+    # Cap daily additions so the sheet stays manageable; overflow stays
+    # eligible for later runs (drop their ids from last_seen_ids).
+    if len(final) > NEW_LEADS_CAP:
+        overflow = final[NEW_LEADS_CAP:]
+        final = final[:NEW_LEADS_CAP]
+        for p in overflow:
+            pid = str(p.get("id") or "").strip()
+            if pid:
+                seen_ids.discard(pid)
         print(
-            f"Today's search: keyword={used_keyword!r}, "
-            f"region={used_region!r}, page={used_page}"
+            f"Capped NEW leads to {NEW_LEADS_CAP} "
+            f"(held back {len(overflow)} for later runs)",
+            flush=True,
         )
-        print("Found 0 new leads (0 duplicates skipped)")
-        return []
 
-    people = _enrich_people(found)
-    new_people, dupes = _filter_new_leads(
-        people,
-        sheet_emails=sheet_emails,
-        seen_ids=seen_ids,
-        require_email=require_email,
+    _save_run_state(
+        variants_run=variants_run,
+        total_hits=total_hits,
+        new_added=len(final),
+        duplicates_skipped=total_dupes,
+        last_seen_ids=list(seen_ids),
     )
 
-    state["last_seen_ids"] = list(seen_ids)
-    _save_state(state)
-
-    print(
-        f"Today's search: keyword={used_keyword!r}, "
-        f"region={used_region!r}, page={used_page}"
-    )
-    print(f"Found {len(new_people)} new leads ({dupes} duplicates skipped)")
-    return new_people
+    print(f"TOTAL NEW AFTER DEDUP: {len(final)}", flush=True)
+    return final
