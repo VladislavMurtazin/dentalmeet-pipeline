@@ -5,6 +5,7 @@ gmail_token.json
 __pycache__/
 *.pyc
 data/leads.csv
+data/research_state.json
 data/dry_run.json
 data/dry_run.json.txt
 data/drafts/
