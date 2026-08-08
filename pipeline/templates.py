@@ -8,12 +8,20 @@ CALENDLY_URL = (
     os.environ.get("CALENDLY_URL", "").strip() or _DEFAULT_CALENDLY
 )
 
+UNSUBSCRIBE_URL = "https://dentalmeet.agency/unsubscribe"
+UNSUBSCRIBE_FOOTER = (
+    f"To unsubscribe, click here: {UNSUBSCRIBE_URL}\n"
+    'Not interested? Reply "unsubscribe" and we\'ll remove you.\n'
+)
+
 # Standard agency signature (warm / DentalMeet-owned inbox).
 # Cold outreach should later move to a separate sending domain/mailbox.
 SIGNATURE = (
     "— Vladislav\n"
     "Founder, DentalMeet\n"
     "hello@dentalmeet.agency\n"
+    "\n"
+    f"{UNSUBSCRIBE_FOOTER}"
 )
 
 
@@ -59,7 +67,7 @@ def FIRST_EMAIL_TEMPLATE(
         f"\n"
         f"{SIGNATURE}"
         f"\n"
-        f'P.S. Not relevant? Reply "no thanks" and I\'ll stop.\n'
+        f'P.S. Not relevant? Reply "no thanks" or "unsubscribe" and I\'ll stop.\n'
     )
     return subject, body
 

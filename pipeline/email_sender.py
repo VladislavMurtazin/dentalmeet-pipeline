@@ -21,6 +21,13 @@ MAX_PER_RUN = 12
 DELAY_MIN = 45
 DELAY_MAX = 90
 
+UNSUBSCRIBE_URL = "https://dentalmeet.agency/unsubscribe"
+UNSUBSCRIBE_MAILTO = "mailto:hello@dentalmeet.agency?subject=unsubscribe"
+UNSUBSCRIBE_FOOTER = (
+    f"To unsubscribe, click here: {UNSUBSCRIBE_URL}\n"
+    'Not interested? Reply "unsubscribe" and we\'ll remove you.'
+)
+
 SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -77,6 +84,14 @@ def _get_service():
     return _service
 
 
+def _with_unsubscribe_footer(body_text: str) -> str:
+    """Ensure body ends with a one-click unsubscribe line."""
+    text = (body_text or "").rstrip()
+    if UNSUBSCRIBE_URL in text:
+        return text + "\n"
+    return text + "\n\n" + UNSUBSCRIBE_FOOTER + "\n"
+
+
 def _build_raw_message(to: str, subject: str, body_text: str, from_addr: str) -> dict:
     """MIMEText → base64url raw payload for Gmail API (padding stripped)."""
     msg = MIMEText(body_text or "", _charset="utf-8")
@@ -85,8 +100,15 @@ def _build_raw_message(to: str, subject: str, body_text: str, from_addr: str) ->
     msg["To"] = to
     msg["Subject"] = subject or ""
     msg["Date"] = formatdate(localtime=True)
-    domain = (from_addr.split("@")[-1] if from_addr and "@" in from_addr else "gmail.com")
+    domain = (
+        from_addr.split("@")[-1] if from_addr and "@" in from_addr else "gmail.com"
+    )
     msg["Message-ID"] = make_msgid(domain=domain)
+    # Gmail bulk-sender / one-click unsubscribe (RFC 8058)
+    msg["List-Unsubscribe"] = (
+        f"<{UNSUBSCRIBE_MAILTO}>, <{UNSUBSCRIBE_URL}>"
+    )
+    msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii").rstrip("=")
     return {"raw": raw}
@@ -96,21 +118,28 @@ def send_email(to: str, subject: str, body_text: str) -> bool:
     """Send one plain-text email via Gmail API. True on success."""
     to = (to or "").strip()
     subject = subject or ""
-    body_text = body_text or ""
+    body_text = _with_unsubscribe_footer(body_text or "")
 
     if not to:
         print("send_email error: empty recipient")
         return False
 
+    from_addr = _from_addr()
     if _dry_run():
+        preview = _build_raw_message(to, subject, body_text, from_addr or "dry-run@local")
+        # Decode headers for local verification without sending
+        padded = preview["raw"] + "=" * (-len(preview["raw"]) % 4)
+        raw_bytes = base64.urlsafe_b64decode(padded.encode("ascii"))
         print("=== DRY_RUN email ===")
         print(f"To: {to}")
         print(f"Subject: {subject}")
+        print(f"List-Unsubscribe: <{UNSUBSCRIBE_MAILTO}>, <{UNSUBSCRIBE_URL}>")
+        print("List-Unsubscribe-Post: List-Unsubscribe=One-Click")
         print(body_text)
+        print(f"(raw payload bytes={len(raw_bytes)})")
         print("=== end DRY_RUN ===")
         return True
 
-    from_addr = _from_addr()
     try:
         service = _get_service()
         body = _build_raw_message(to, subject, body_text, from_addr)
