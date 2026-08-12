@@ -34,6 +34,7 @@ on:
           - payment_check
           - warmup_send
           - warmup_process
+          - warmup_stats
           - all
 
 # Shared secrets for all jobs (per-job env can still override / extend).
@@ -725,6 +726,51 @@ jobs:
           IMAP_SERVER: imap.zoho.com
           IMAP_PORT: "993"
           DRY_RUN: "false"
+
+      - name: Persist warmup schedule
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/warmup_schedule.json
+          key: warmup-schedule-${{ github.repository }}-${{ github.run_id }}
+
+  warmup_stats:
+    name: warmup_stats
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.job == 'warmup_stats' || github.event.inputs.job == 'all')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore warmup schedule
+        uses: actions/cache@v4
+        with:
+          path: data/warmup_schedule.json
+          key: warmup-schedule-${{ github.repository }}
+          restore-keys: |
+            warmup-schedule-
+
+      - name: Show warmup stats
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          python -m pipeline.warmup stats
+        env:
+          SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
+          SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
 
       - name: Persist warmup schedule
         if: always()
