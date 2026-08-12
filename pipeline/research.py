@@ -320,6 +320,7 @@ def _headers() -> dict:
 
 
 def _norm_linkedin(url: str) -> str:
+    """Normalize LinkedIn URL for sheet comparison (lowercase + trim + strip junk)."""
     raw = (url or "").strip().lower()
     if not raw:
         return ""
@@ -330,12 +331,30 @@ def _norm_linkedin(url: str) -> str:
 
 
 def _identity_key(first: str, last: str, org: str) -> str:
-    f = (first or "").strip().lower()
-    l = (last or "").strip().lower()
-    o = (org or "").strip().lower()
-    if not (f or l) or not o:
+    """Name+company key: lowercased first+last+org with non-alphanumerics stripped.
+
+    Returns "" if name or company is empty after normalization (no false matches).
+    """
+    name = re.sub(r"[^a-z0-9]", "", f"{first or ''}{last or ''}".lower())
+    company = re.sub(r"[^a-z0-9]", "", (org or "").lower())
+    if not name or not company:
         return ""
-    return f"{f}|{l}|{o}"
+    return f"{name}{company}"
+
+
+def _clear_last_seen_ids() -> None:
+    """Wipe polluted search-ID cache. Batch dedup must not use this file."""
+    state = _load_state()
+    prev = state.get("last_seen_ids") or []
+    n = len(prev) if isinstance(prev, list) else 0
+    state["last_seen_ids"] = []
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STATE_PATH.write_text(
+        json.dumps(state, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    if n:
+        _log(f"Cleared research_state last_seen_ids ({n} IDs removed)")
 
 
 def _load_sheet_dedup_index() -> dict:
@@ -390,12 +409,13 @@ def _load_sheet_dedup_index() -> dict:
             for name, idx in (
                 ("Company", i_company),
                 ("Contact", i_contact),
-                ("Email", i_email),
                 ("PersonID", i_pid),
                 ("LinkedIn", i_li),
             )
             if idx is not None
         ]
+        # Email still indexed for post-enrich save dedup (not enrich guard)
+        index["meta"]["email_column"] = i_email is not None
 
         for row_i, row in enumerate(values[1:], start=2):
             def cell(i: int | None) -> str:
@@ -440,14 +460,13 @@ def _load_sheet_dedup_index() -> dict:
 
 
 def _is_duplicate_before_enrich(p: dict, index: dict) -> bool:
-    """True if person already in sheet / known — do NOT spend credits.
+    """True if person already on Agencies sheet — do NOT spend enrich credits.
 
-    Comparison order (unchanged):
-      1. person_id / id  ∈ index['person_ids']  (from sheet PersonID column)
-      2. normalized linkedin_url ∈ index['linkedins']  (from sheet LinkedIn)
-      3. identity key first|last|org ∈ index['identities']
-         (from sheet Contact split + Company)
-      4. email ∈ index['emails']  (from sheet Email)
+    Sheet-only keys (ANY match => duplicate):
+      1. PersonID when both candidate and sheet row have it
+      2. normalized linkedin_url (lowercase/trim)
+      3. identity = alnum(lower(first+last+organization)) from Contact+Company
+    Does NOT use last_seen_ids or email.
     """
     pid = str(p.get("id") or p.get("person_id") or "").strip()
     if pid and pid in index["person_ids"]:
@@ -466,24 +485,11 @@ def _is_duplicate_before_enrich(p: dict, index: dict) -> bool:
     ident = _identity_key(first, last, str(org_name))
     if ident and ident in index["identities"]:
         return True
-    email = (_person_email(p) or "").lower()
-    if email and email in index["emails"]:
-        return True
     return False
 
 
-def _explain_duplicate(
-    p: dict,
-    *,
-    index: dict,
-    seen_ids: set[str],
-    state_ids: set[str],
-) -> dict:
-    """Explain WHY a person would be skipped (mirrors batch dedup checks).
-
-    Batch loop skips when: ``pid in seen_ids`` OR ``_is_duplicate_before_enrich``.
-    ``seen_ids`` at start = research_state last_seen_ids ∪ sheet PersonIDs.
-    """
+def _explain_duplicate(p: dict, *, index: dict) -> dict:
+    """Explain WHY a person would be skipped (mirrors sheet-only batch dedup)."""
     pid = str(p.get("id") or p.get("person_id") or "").strip()
     first = (p.get("first_name") or "").strip()
     last = (
@@ -497,7 +503,6 @@ def _explain_duplicate(
     )
     li_raw = _person_linkedin(p)
     li = _norm_linkedin(li_raw)
-    email = (_person_email(p) or "").lower()
     ident = _identity_key(first, last, org_name)
 
     name = f"{first} {last}".strip() or "(no name)"
@@ -507,29 +512,7 @@ def _explain_duplicate(
         "linkedin_url": li_raw or "(none)",
         "person_id": pid or "(none)",
         "identity_key": ident or "(none)",
-        "email": email or "(none)",
     }
-
-    # Order matches the batch loop: seen_ids first, then sheet index checks
-    if pid and pid in seen_ids:
-        if pid in state_ids and pid not in index.get("person_ids", set()):
-            return {
-                **base,
-                "matched_field": "last_seen_ids (research_state.json person_id)",
-                "matched_value": pid,
-                "matched_sheet_row": None,
-                "note": (
-                    "ID was seen in a prior research run; "
-                    "may NEVER have been saved to sheet"
-                ),
-            }
-        sheet_hit = index.get("person_id_rows", {}).get(pid)
-        return {
-            **base,
-            "matched_field": "seen_ids / PersonID",
-            "matched_value": pid,
-            "matched_sheet_row": sheet_hit,
-        }
 
     if pid and pid in index.get("person_ids", set()):
         return {
@@ -548,16 +531,9 @@ def _explain_duplicate(
     if ident and ident in index.get("identities", set()):
         return {
             **base,
-            "matched_field": "identity first|last|organization (Contact+Company)",
+            "matched_field": "identity name+company (alnum)",
             "matched_value": ident,
             "matched_sheet_row": index.get("identity_rows", {}).get(ident),
-        }
-    if email and email in index.get("emails", set()):
-        return {
-            **base,
-            "matched_field": "Email",
-            "matched_value": email,
-            "matched_sheet_row": index.get("email_rows", {}).get(email),
         }
     return {
         **base,
@@ -569,24 +545,14 @@ def _explain_duplicate(
 
 def _print_dedup_key_docs() -> None:
     _log("=== DEDUP KEYS (batch mode, before enrich) ===")
-    _log("Checks (in order):")
-    _log("  1. person_id / Apollo id  in  seen_ids")
+    _log("Sheet-only (last_seen_ids NOT used). Duplicate if ANY match:")
+    _log("  1. PersonID — when both candidate and sheet row have it")
+    _log("  2. linkedin_url — lowercase/trim (normalized)")
+    _log("  3. identity — alnum(lower(first+last+organization))")
+    _log("     sheet side: Contact split on first space + Company")
     _log(
-        "     seen_ids start = research_state.json['last_seen_ids'] "
-        "UNION sheet column PersonID"
-    )
-    _log(
-        "  2. PersonID               in  sheet PersonID column  "
-        "(via _is_duplicate_before_enrich)"
-    )
-    _log("  3. normalized linkedin    in  sheet LinkedIn column")
-    _log("  4. identity key           in  sheet Contact+Company")
-    _log("     identity = lower(first)|lower(last)|lower(organization)")
-    _log("     Contact is split on first space -> first / rest=last")
-    _log("  5. email                  in  sheet Email column")
-    _log(
-        "Also: within this run, accepted candidates reserve their "
-        "person_id / linkedin / identity so later candidates can match them."
+        "Within this run, accepted candidates also reserve "
+        "PersonID / LinkedIn / identity in the in-memory index."
     )
 
 
@@ -1013,13 +979,17 @@ def _search_collect(
 def _run_credit_safe(
     *, require_email: bool, limit: int | None
 ) -> list[dict]:
-    """Default / cron: search only, 0 enrichment credits."""
+    """Default / cron: search only, 0 enrichment credits.
+
+    last_seen_ids is CRON-ONLY (not used by batch enrich guards).
+    """
     _log(
         "Credit-safe mode: search with verified filter only, enrichment disabled"
     )
     state = _load_state()
     index = _load_sheet_dedup_index()
     sheet_emails = set(index["emails"])
+    # Cron ID cache only — batch mode never reads this for enrich guards
     seen_ids = {str(x) for x in (state.get("last_seen_ids") or []) if x}
     seen_ids |= set(index["person_ids"])
     run_emails: set[str] = set()
@@ -1090,27 +1060,24 @@ def _dedup_decision_makers(
     decision: list[dict],
     *,
     index: dict,
-    seen_ids: set[str],
-    state_ids: set[str],
     debug: bool = False,
     debug_limit: int = 10,
 ) -> tuple[list[dict], int]:
-    """Apply batch pre-enrich dedup. Logic unchanged; optional DEBUG samples."""
+    """Batch pre-enrich dedup against Agencies sheet only (no last_seen_ids)."""
     new_pool: list[dict] = []
     skipped_dup = 0
     debug_shown = 0
+    new_shown = 0
 
     for p in decision:
         pid = str(p.get("id") or "").strip()
         if not pid:
             continue
-        is_dup = pid in seen_ids or _is_duplicate_before_enrich(p, index)
+        is_dup = _is_duplicate_before_enrich(p, index)
         if is_dup:
             skipped_dup += 1
             if debug and debug_shown < debug_limit:
-                info = _explain_duplicate(
-                    p, index=index, seen_ids=seen_ids, state_ids=state_ids
-                )
+                info = _explain_duplicate(p, index=index)
                 debug_shown += 1
                 _log(f"--- DEBUG skipped_dup #{debug_shown} ---")
                 _log(
@@ -1120,12 +1087,8 @@ def _dedup_decision_makers(
                     f"  linkedin_url: {info['linkedin_url']} | "
                     f"person_id: {info['person_id']}"
                 )
-                _log(
-                    f"  matched_field: {info['matched_field']}"
-                )
-                _log(
-                    f"  matched_value: {info['matched_value']}"
-                )
+                _log(f"  matched_field: {info['matched_field']}")
+                _log(f"  matched_value: {info['matched_value']}")
                 row = info.get("matched_sheet_row")
                 if row:
                     _log(
@@ -1138,15 +1101,23 @@ def _dedup_decision_makers(
                     )
                 else:
                     _log("  matched_sheet_row: (none - not a sheet row match)")
-                if info.get("note"):
-                    _log(f"  note: {info['note']}")
-            if pid:
-                seen_ids.add(pid)
             continue
 
         new_pool.append(p)
-        seen_ids.add(pid)
-        # Reserve identity/linkedin in index so we don't enrich siblings twice
+        if debug and new_shown < debug_limit:
+            new_shown += 1
+            first = (p.get("first_name") or "").strip()
+            last = (
+                p.get("last_name") or p.get("last_name_obfuscated") or ""
+            ).strip()
+            org = (p.get("organization") or {}).get("name") or ""
+            _log(
+                f"--- DEBUG new #{new_shown}: "
+                f"{first} {last} | {org} | person_id={pid} ---"
+            )
+
+        # Reserve keys in index so later candidates in this run match as dups
+        index["person_ids"].add(pid)
         li = _norm_linkedin(_person_linkedin(p))
         if li:
             index["linkedins"].add(li)
@@ -1165,10 +1136,9 @@ def _dedup_decision_makers(
 def run_debug_dedup() -> None:
     """Small search + dedup diagnostics; no enrichment, no sheet writes."""
     _log("=== DEBUG-DEDUP (no enrichment, no sheet writes) ===")
+    _clear_last_seen_ids()
     _print_dedup_key_docs()
 
-    state = _load_state()
-    state_ids = {str(x) for x in (state.get("last_seen_ids") or []) if x}
     index = _load_sheet_dedup_index()
     meta = index.get("meta") or {}
 
@@ -1176,17 +1146,12 @@ def run_debug_dedup() -> None:
     _log(f"Agencies data rows (excl. header): {meta.get('sheet_rows', 0)}")
     _log(f"Header row: {meta.get('header', [])}")
     _log(f"Columns loaded for comparison: {meta.get('columns_loaded', [])}")
-    _log(f"Index sizes: PersonID={len(index['person_ids'])} "
-         f"LinkedIn={len(index['linkedins'])} "
-         f"identity={len(index['identities'])} "
-         f"email={len(index['emails'])}")
     _log(
-        f"research_state last_seen_ids: {len(state_ids)} "
-        f"(these feed seen_ids even if not on the sheet)"
+        f"Index sizes: PersonID={len(index['person_ids'])} "
+        f"LinkedIn={len(index['linkedins'])} "
+        f"identity={len(index['identities'])}"
     )
-
-    seen_ids = set(state_ids) | set(index["person_ids"])
-    _log(f"seen_ids at start (state UNION PersonID): {len(seen_ids)}")
+    _log("Batch dedup uses sheet only (last_seen_ids ignored)")
 
     # 1–2 batch variants only
     variants = get_all_search_variants()[:2]
@@ -1196,13 +1161,14 @@ def run_debug_dedup() -> None:
     )
     raw, total_hits = _search_collect(variants, per_page=50, max_pages=1)
     decision = [p for p in raw if _is_decision_maker(p.get("title") or "")]
-    _log(f"Sample: raw={len(raw)} decision-makers={len(decision)} (hits={total_hits})")
+    _log(
+        f"Sample: raw={len(raw)} decision-makers={len(decision)} "
+        f"(hits={total_hits})"
+    )
 
     new_pool, skipped_dup = _dedup_decision_makers(
         decision,
         index=index,
-        seen_ids=seen_ids,
-        state_ids=state_ids,
         debug=True,
         debug_limit=10,
     )
@@ -1225,11 +1191,11 @@ def _run_batch_enrich(
         f"(save_cap={save_cap})"
     )
     _log("Guards: title filter + sheet dedup BEFORE any enrichment call")
+    _clear_last_seen_ids()
     if debug_dedup:
         _print_dedup_key_docs()
 
-    state = _load_state()
-    state_ids = {str(x) for x in (state.get("last_seen_ids") or []) if x}
+    # Sheet-only index — never seed from last_seen_ids
     index = _load_sheet_dedup_index()
     meta = index.get("meta") or {}
     if debug_dedup:
@@ -1239,12 +1205,8 @@ def _run_batch_enrich(
         _log(
             f"Index sizes: PersonID={len(index['person_ids'])} "
             f"LinkedIn={len(index['linkedins'])} "
-            f"identity={len(index['identities'])} "
-            f"email={len(index['emails'])}"
+            f"identity={len(index['identities'])}"
         )
-        _log(f"research_state last_seen_ids: {len(state_ids)}")
-
-    seen_ids = set(state_ids) | set(index["person_ids"])
 
     variants = get_all_search_variants()
     _log(
@@ -1261,12 +1223,10 @@ def _run_batch_enrich(
     decision = [p for p in raw if _is_decision_maker(p.get("title") or "")]
     y_decision = len(decision)
 
-    # Dedup BEFORE enrich (critical — no credits on duplicates)
+    # Dedup BEFORE enrich (sheet only — no last_seen_ids)
     new_pool, skipped_dup = _dedup_decision_makers(
         decision,
         index=index,
-        seen_ids=seen_ids,
-        state_ids=state_ids,
         debug=debug_dedup,
         debug_limit=10,
     )
@@ -1279,8 +1239,8 @@ def _run_batch_enrich(
 
     if not new_pool:
         _log(
-            f"BATCH: found {x_raw} raw → {y_decision} decision-makers → "
-            f"{z_new} new after dedup → enriched 0 → 0 with email → saved 0 "
+            f"BATCH: found {x_raw} raw -> {y_decision} decision-makers -> "
+            f"{z_new} new after dedup -> enriched 0 -> 0 with email -> saved 0 "
             f"(credits spent: 0)"
         )
         _save_run_state(
@@ -1288,7 +1248,7 @@ def _run_batch_enrich(
             total_hits=total_hits,
             new_added=0,
             duplicates_skipped=skipped_dup,
-            last_seen_ids=list(seen_ids),
+            last_seen_ids=[],  # batch must not pollute cron ID cache
             enrichment="batch",
             credits_spent=0,
         )
@@ -1298,7 +1258,7 @@ def _run_batch_enrich(
     m_attempted = credits
     w_with_email = len(enriched_people)
 
-    # Final email dedup vs sheet
+    # Final email dedup vs sheet (save path only — not enrich guard)
     sheet_emails = set(index["emails"])
     final: list[dict] = []
     run_emails: set[str] = set()
@@ -1314,15 +1274,14 @@ def _run_batch_enrich(
         sheet_emails.add(email)
         pid = str(p.get("person_id") or p.get("id") or "").strip()
         if pid:
-            seen_ids.add(pid)
             index["person_ids"].add(pid)
         final.append(p)
 
     w_saved = len(final)
     _log(
-        f"BATCH: found {x_raw} raw → {y_decision} decision-makers → "
-        f"{z_new} new after dedup → enriched {m_attempted} → "
-        f"{w_with_email} with email → saved {w_saved} "
+        f"BATCH: found {x_raw} raw -> {y_decision} decision-makers -> "
+        f"{z_new} new after dedup -> enriched {m_attempted} -> "
+        f"{w_with_email} with email -> saved {w_saved} "
         f"(credits spent: {m_attempted})"
     )
     _log(f"TOTAL NEW AFTER DEDUP: {w_saved}")
@@ -1332,7 +1291,7 @@ def _run_batch_enrich(
         total_hits=total_hits,
         new_added=w_saved,
         duplicates_skipped=skipped_dup,
-        last_seen_ids=list(seen_ids),
+        last_seen_ids=[],  # batch must not pollute cron ID cache
         enrichment="batch",
         credits_spent=m_attempted,
     )
