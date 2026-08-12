@@ -802,8 +802,29 @@ def _enrich_pool(pool: list[dict], *, max_enrich: int) -> tuple[list[dict], int]
     """Enrich up to max_enrich people. Returns (people_with_email, credits_spent).
 
     credits_spent ≈ number of people we attempted to enrich.
+    Skips people already in data/enriched_leads.jsonl (idempotent).
+    Local-saves each successful enrich before returning.
     """
-    to_enrich = pool[: max(0, int(max_enrich))]
+    from .enriched_store import already_enriched_locally, append_enriched_lead, load_local_index
+
+    local_idx = load_local_index()
+    candidates: list[dict] = []
+    skipped_local = 0
+    for p in pool:
+        if already_enriched_locally(p, local_idx):
+            skipped_local += 1
+            continue
+        candidates.append(p)
+        if len(candidates) >= max(0, int(max_enrich)):
+            break
+
+    if skipped_local:
+        _log(
+            f"Idempotent enrich: skipped {skipped_local} already in "
+            f"enriched_leads.jsonl"
+        )
+
+    to_enrich = candidates
     if not to_enrich:
         return [], 0
 
@@ -855,6 +876,13 @@ def _enrich_pool(pool: list[dict], *, max_enrich: int) -> tuple[list[dict], int]
             person["email"] = email
             person["verified_email"] = True
             person["person_id"] = pid or person.get("person_id") or ""
+            # LOCAL-FIRST: persist before any Sheets write
+            append_enriched_lead(person, synced=False)
+            local_idx["person_ids"].add(pid)
+            local_idx["emails"].add(email.lower())
+            li = _norm_linkedin(_person_linkedin(person))
+            if li:
+                local_idx["linkedins"].add(li)
             with_email.append(person)
 
         time.sleep(0.25)
@@ -1231,6 +1259,17 @@ def _run_batch_enrich(
         debug_limit=10,
     )
 
+    # Also skip anyone already in local enriched_leads.jsonl (idempotent)
+    from .enriched_store import already_enriched_locally, load_local_index
+
+    local_idx = load_local_index()
+    before_local = len(new_pool)
+    new_pool = [p for p in new_pool if not already_enriched_locally(p, local_idx)]
+    skipped_local = before_local - len(new_pool)
+    if skipped_local:
+        _log(f"Skipped {skipped_local} already in enriched_leads.jsonl")
+        skipped_dup += skipped_local
+
     z_new = len(new_pool)
     _log(
         f"Pre-enrich pool: raw={x_raw} decision-makers={y_decision} "
@@ -1310,17 +1349,21 @@ def find_agencies(
     - enrich=None → credit-safe search only (cron)
     - enrich=N → batch enrichment of up to N new decision-makers
     """
+    from .enriched_store import research_lock
+
     _ = page
     apollo_key = os.environ.get("APOLLO_KEY", "").strip()
-    if not apollo_key:
-        people = _from_csv()
-        if require_email:
-            people = [p for p in people if (p.get("email") or "").strip()]
-        cap = NEW_LEADS_CAP if limit is None else min(NEW_LEADS_CAP, max(1, int(limit)))
-        if enrich is not None:
-            cap = min(cap, max(1, int(enrich)))
-        return people[:cap]
+    # Lock all research runs that hit Apollo / Sheets (not dry-run callers)
+    with research_lock(enabled=True):
+        if not apollo_key:
+            people = _from_csv()
+            if require_email:
+                people = [p for p in people if (p.get("email") or "").strip()]
+            cap = NEW_LEADS_CAP if limit is None else min(NEW_LEADS_CAP, max(1, int(limit)))
+            if enrich is not None:
+                cap = min(cap, max(1, int(enrich)))
+            return people[:cap]
 
-    if enrich is not None and int(enrich) > 0:
-        return _run_batch_enrich(enrich_limit=int(enrich), limit=limit)
-    return _run_credit_safe(require_email=require_email, limit=limit)
+        if enrich is not None and int(enrich) > 0:
+            return _run_batch_enrich(enrich_limit=int(enrich), limit=limit)
+        return _run_credit_safe(require_email=require_email, limit=limit)

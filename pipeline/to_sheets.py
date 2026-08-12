@@ -3,9 +3,14 @@
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 import gspread
+
+# Retry / throttle for Sheets quota (429)
+SHEETS_RETRY_BACKOFF_SEC = (60, 90, 120, 180, 240, 300)
+SHEETS_ROW_DELAY_SEC = 1.5
 
 ROOT = Path(__file__).resolve().parent.parent
 SA_FILE = ROOT / "service_account.json"
@@ -154,8 +159,73 @@ def update_signal(row_index: int, signal: str) -> None:
     ws.update_cell(int(row_index), SIGNAL_COL, signal or "")
 
 
+def _is_sheets_quota_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    if "429" in msg or "quota exceeded" in msg or "rate limit" in msg:
+        return True
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if code == 429:
+        return True
+    resp = getattr(exc, "response", None)
+    if resp is not None and getattr(resp, "status_code", None) == 429:
+        return True
+    return False
+
+
+def _reset_ws_cache() -> None:
+    global _ws
+    _ws = None
+
+
+def _norm_li(url: str) -> str:
+    raw = (url or "").strip().lower()
+    if not raw:
+        return ""
+    raw = raw.split("?", 1)[0].rstrip("/")
+    return raw.replace("https://", "").replace("http://", "").replace("www.", "")
+
+
+def load_sheet_identity_index() -> dict[str, set[str]]:
+    """PersonID / email / LinkedIn sets from Agencies (for sync-leads dedup)."""
+    index = {"person_ids": set(), "emails": set(), "linkedins": set()}
+    ws = _ws_cached()
+    values = ws.get_all_values()
+    if not values:
+        return index
+    header = [(h or "").strip() for h in values[0]]
+
+    def col(name: str) -> int | None:
+        try:
+            return header.index(name)
+        except ValueError:
+            try:
+                return HEADERS.index(name)
+            except ValueError:
+                return None
+
+    i_email = col("Email")
+    i_pid = col("PersonID")
+    i_li = col("LinkedIn")
+    for row in values[1:]:
+        def cell(i: int | None) -> str:
+            if i is None or i >= len(row):
+                return ""
+            return (row[i] or "").strip()
+
+        email = cell(i_email).lower()
+        pid = cell(i_pid)
+        li = _norm_li(cell(i_li))
+        if email:
+            index["emails"].add(email)
+        if pid:
+            index["person_ids"].add(pid)
+        if li:
+            index["linkedins"].add(li)
+    return index
+
+
 def add_row(person: dict, opener: str = "") -> bool:
-    """Write one lead into A..M at the next free row. Skip dup emails.
+    """Write one lead into A..O at the next free row. Skip dup emails.
 
     ``opener`` maps to the Signal column; leave empty for lazy scrape at send.
     """
@@ -213,3 +283,48 @@ def add_row(person: dict, opener: str = "") -> bool:
         value_input_option="USER_ENTERED",
     )
     return True
+
+
+def add_row_with_retry(
+    person: dict,
+    opener: str = "",
+    *,
+    max_retries: int | None = None,
+    row_delay: float | None = None,
+) -> bool:
+    """``add_row`` with 429 retry/backoff and inter-row throttle.
+
+    Backoff sleeps: 60s, 90s, 120s, 180s, 240s, 300s (up to 6 retries).
+    """
+    email = (person.get("email") or "").strip() or "(no-email)"
+    retries = (
+        len(SHEETS_RETRY_BACKOFF_SEC)
+        if max_retries is None
+        else max(0, int(max_retries))
+    )
+    delay = SHEETS_ROW_DELAY_SEC if row_delay is None else float(row_delay)
+    attempt = 0
+
+    while True:
+        try:
+            ok = add_row(person, opener)
+            if delay > 0:
+                time.sleep(delay)
+            status = "added" if ok else "skipped"
+            print(f"sheets {status}: {email}", flush=True)
+            return ok
+        except Exception as e:
+            if not _is_sheets_quota_error(e) or attempt >= retries:
+                print(f"sheets FAILED {email}: {e}", flush=True)
+                raise
+            sleep_for = SHEETS_RETRY_BACKOFF_SEC[
+                min(attempt, len(SHEETS_RETRY_BACKOFF_SEC) - 1)
+            ]
+            attempt += 1
+            print(
+                f"sheets 429 for {email}; retry {attempt}/{retries} "
+                f"after {sleep_for}s",
+                flush=True,
+            )
+            _reset_ws_cache()
+            time.sleep(sleep_for)

@@ -26,7 +26,7 @@ load_dotenv()
 
 from .personalize import parse_signal
 from .research import find_agencies
-from .to_sheets import HEADERS, add_row
+from .to_sheets import HEADERS, add_row_with_retry
 
 
 def collect_leads(
@@ -57,17 +57,39 @@ def collect_leads(
 
 
 def push_leads(rows: list[dict]) -> None:
-    """Write rows that already have an 'opener' field into Sheets."""
+    """Write rows to Sheets with retry/backoff; mark local jsonl synced on success."""
+    from .enriched_store import append_enriched_lead, mark_synced
+
     for i, row in enumerate(rows, start=1):
         person = row["person"]
         email = person.get("email", "") or row.get("domain", "")
+        # Ensure local-first even for credit-safe / CSV paths
+        if (person.get("email") or "").strip():
+            append_enriched_lead(person, synced=False)
         try:
             opener = (row.get("opener") or "").strip()
-            added = add_row(person, opener)
+            added = add_row_with_retry(person, opener)
             status = "added" if added else "skipped"
-            print(f"[{i}/{len(rows)}] {status}: {email}")
+            print(f"[{i}/{len(rows)}] {status}: {email}", flush=True)
+            if added or status == "skipped":
+                mark_synced(
+                    person_id=str(person.get("person_id") or person.get("id") or ""),
+                    email=str(person.get("email") or ""),
+                )
         except Exception as e:
-            print(f"[{i}/{len(rows)}] error for {email}: {e}")
+            print(f"[{i}/{len(rows)}] error for {email}: {e}", flush=True)
+            print(
+                "  (lead kept in data/enriched_leads.jsonl — run sync-leads later)",
+                flush=True,
+            )
+
+
+def run_sync_leads(args: argparse.Namespace) -> None:
+    from .enriched_store import sync_leads_to_sheet
+
+    limit = getattr(args, "limit", None)
+    summary = sync_leads_to_sheet(limit=limit)
+    print(json.dumps(summary, ensure_ascii=False), flush=True)
 
 
 def run_research(args: argparse.Namespace) -> None:
@@ -235,6 +257,17 @@ def main() -> None:
         help="Diagnose batch dedup (1–2 search variants, no enrich, no sheet writes)",
     )
 
+    p_sync = sub.add_parser(
+        "sync-leads",
+        help="Push unsynced data/enriched_leads.jsonl rows to Agencies (retry/backoff)",
+    )
+    p_sync.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Max unsynced leads to write this run",
+    )
+
     p_send = sub.add_parser("send", help="Send first-touch emails to unsent leads")
     p_send.add_argument(
         "--limit",
@@ -294,6 +327,10 @@ def main() -> None:
 
     if args.command == "send":
         run_send(args)
+        return
+
+    if args.command == "sync-leads":
+        run_sync_leads(args)
         return
 
     if args.command == "followup":

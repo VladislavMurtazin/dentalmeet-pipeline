@@ -6,6 +6,8 @@ __pycache__/
 *.pyc
 data/leads.csv
 data/research_state.json
+data/enriched_leads.jsonl
+data/research.lock
 data/signal_cache.json
 data/template_rotation.json
 data/template_stats.json
