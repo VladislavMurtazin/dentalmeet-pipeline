@@ -3,15 +3,17 @@ name: lead-pipeline
 on:
   schedule:
     - cron: "0 8 * * *"      # research — daily 08:00 UTC
-    - cron: "0 14 * * 1-5"   # send — weekdays 14:00 UTC
-    - cron: "0 15 * * 1-5"   # followup1 — weekdays 15:00 UTC
-    - cron: "0 16 * * 1-5"   # followup2 — weekdays 16:00 UTC
-    - cron: "0 */6 * * *"    # replies + warmup_send — every 6 hours
-    - cron: "0 */2 * * *"    # check_forms + warmup_process — every 2 hours
+#    - cron: "0 14 * * 1-5"   # send — weekdays 14:00 UTC
+#    - cron: "0 15 * * 1-5"   # followup1 — weekdays 15:00 UTC
+#    - cron: "0 16 * * 1-5"   # followup2 — weekdays 16:00 UTC
+    - cron: "0 */6 * * *"    # replies — every 6 hours
+    - cron: "0 */2 * * *"    # check_forms — every 2 hours
     - cron: "30 */2 * * *"   # launch_pending — every 2 hours (:30)
     - cron: "0 9 * * 1"      # weekly reports — Monday 09:00 UTC
     - cron: "15 9 * * *"     # pilot invoices — daily 09:15 UTC (3 weeks after start)
     - cron: "0 10 * * *"     # payment check — daily 10:00 UTC
+    - cron: "0 */4 * * *"    # warmup_send — every 4 hours
+    - cron: "0 2-23/4 * * *" # warmup_process — 02,06,10,14,18,22 UTC
   workflow_dispatch:
     inputs:
       job:
@@ -612,11 +614,11 @@ jobs:
   warmup_send:
     name: warmup_send
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 */6 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 */4 * * *') ||
       (github.event_name == 'workflow_dispatch' &&
         (github.event.inputs.job == 'warmup_send' || github.event.inputs.job == 'all'))
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -673,7 +675,7 @@ jobs:
   warmup_process:
     name: warmup_process
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 */2 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 2-23/4 * * *') ||
       (github.event_name == 'workflow_dispatch' &&
         (github.event.inputs.job == 'warmup_process' || github.event.inputs.job == 'all'))
     runs-on: ubuntu-latest
