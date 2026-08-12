@@ -2,12 +2,12 @@ name: lead-pipeline
 
 on:
   schedule:
-#    - cron: "0 8 * * *"      # research — daily 08:00 UTC
-#    - cron: "0 14 * * 1-5"   # send — weekdays 14:00 UTC
-#    - cron: "0 15 * * 1-5"   # followup1 — weekdays 15:00 UTC
-#    - cron: "0 16 * * 1-5"   # followup2 — weekdays 16:00 UTC
-    - cron: "0 */6 * * *"    # replies — every 6 hours
-    - cron: "0 */2 * * *"    # check_forms — every 2 hours
+    - cron: "0 8 * * *"      # research — daily 08:00 UTC
+    - cron: "0 14 * * 1-5"   # send — weekdays 14:00 UTC
+    - cron: "0 15 * * 1-5"   # followup1 — weekdays 15:00 UTC
+    - cron: "0 16 * * 1-5"   # followup2 — weekdays 16:00 UTC
+    - cron: "0 */6 * * *"    # replies + warmup_send — every 6 hours
+    - cron: "0 */2 * * *"    # check_forms + warmup_process — every 2 hours
     - cron: "30 */2 * * *"   # launch_pending — every 2 hours (:30)
     - cron: "0 9 * * 1"      # weekly reports — Monday 09:00 UTC
     - cron: "15 9 * * *"     # pilot invoices — daily 09:15 UTC (3 weeks after start)
@@ -30,6 +30,8 @@ on:
           - weekly_report
           - pilot_invoices
           - payment_check
+          - warmup_send
+          - warmup_process
           - all
 
 # Shared secrets for all jobs (per-job env can still override / extend).
@@ -606,3 +608,125 @@ jobs:
           TRC20_WALLET_ADDRESS: ${{ secrets.TRC20_WALLET_ADDRESS }}
           GMAIL_TOKEN_FILE: gmail_token.json
           DRY_RUN: "false"
+
+  warmup_send:
+    name: warmup_send
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 */6 * * *') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.job == 'warmup_send' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore warmup schedule
+        uses: actions/cache@v4
+        with:
+          path: data/warmup_schedule.json
+          key: warmup-schedule-${{ github.repository }}
+          restore-keys: |
+            warmup-schedule-
+
+      - name: Validate Zoho SMTP secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in SMTP_ACCOUNTS SMTP_APP_PASSWORDS; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret/env: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Send warmup emails
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          python -m pipeline.warmup send
+        env:
+          SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
+          SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          IMAP_SERVER: imap.zoho.com
+          IMAP_PORT: "993"
+          DRY_RUN: "false"
+
+      - name: Persist warmup schedule
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/warmup_schedule.json
+          key: warmup-schedule-${{ github.repository }}-${{ github.run_id }}
+
+  warmup_process:
+    name: warmup_process
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 */2 * * *') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.job == 'warmup_process' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore warmup schedule
+        uses: actions/cache@v4
+        with:
+          path: data/warmup_schedule.json
+          key: warmup-schedule-${{ github.repository }}
+          restore-keys: |
+            warmup-schedule-
+
+      - name: Validate Zoho SMTP secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in SMTP_ACCOUNTS SMTP_APP_PASSWORDS; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret/env: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Process warmup inbox
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          python -m pipeline.warmup process
+        env:
+          SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
+          SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          IMAP_SERVER: imap.zoho.com
+          IMAP_PORT: "993"
+          DRY_RUN: "false"
+
+      - name: Persist warmup schedule
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/warmup_schedule.json
+          key: warmup-schedule-${{ github.repository }}-${{ github.run_id }}

@@ -169,10 +169,28 @@ def _apply_unsubscribe_headers(msg) -> None:
     msg["List-Unsubscribe-Post"] = LIST_UNSUBSCRIBE_POST
 
 
-def _build_message(to: str, subject: str, body_text: str, from_addr: str) -> MIMEMultipart:
+def _build_message(
+    to: str,
+    subject: str,
+    body_text: str,
+    from_addr: str,
+    *,
+    skip_unsubscribe: bool = False,
+    extra_headers: dict[str, str] | None = None,
+) -> MIMEMultipart:
     """Build multipart/alternative with unsubscribe headers set before send."""
-    plain = _insert_unsubscribe_before_signature(body_text)
-    html_body = _plain_to_simple_html(plain)
+    if skip_unsubscribe:
+        plain = (body_text or "").rstrip() + "\n"
+        escaped = html_lib.escape(plain)
+        html_body = (
+            "<!DOCTYPE html><html><body style=\"font-family: sans-serif; "
+            "font-size: 14px; color: #222;\">"
+            f"{escaped.replace(chr(10), '<br>' + chr(10))}"
+            "</body></html>"
+        )
+    else:
+        plain = _insert_unsubscribe_before_signature(body_text)
+        html_body = _plain_to_simple_html(plain)
 
     msg = MIMEMultipart("alternative")
     if from_addr:
@@ -184,26 +202,58 @@ def _build_message(to: str, subject: str, body_text: str, from_addr: str) -> MIM
         from_addr.split("@")[-1] if from_addr and "@" in from_addr else "zoho.com"
     )
     msg["Message-ID"] = make_msgid(domain=domain)
-    _apply_unsubscribe_headers(msg)
+    if not skip_unsubscribe:
+        _apply_unsubscribe_headers(msg)
+    for key, value in (extra_headers or {}).items():
+        if key and value and key not in msg:
+            msg[key] = value
 
     msg.attach(MIMEText(plain, "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
     return msg
 
 
-def _send_via_zoho(to: str, subject: str, body_text: str, email: str, password: str) -> None:
+def _send_via_zoho(
+    to: str,
+    subject: str,
+    body_text: str,
+    email: str,
+    password: str,
+    *,
+    skip_unsubscribe: bool = False,
+    extra_headers: dict[str, str] | None = None,
+) -> None:
     """Send one message through Zoho SMTP SSL (raises on failure)."""
-    msg = _build_message(to, subject, body_text, email)
+    msg = _build_message(
+        to,
+        subject,
+        body_text,
+        email,
+        skip_unsubscribe=skip_unsubscribe,
+        extra_headers=extra_headers,
+    )
     with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
         server.login(email, password)
         server.send_message(msg)
 
 
-def send_email(to: str, subject: str, body_text: str) -> bool:
-    """Send via Zoho SMTP with account rotation; retry next account on failure."""
+def send_email(
+    to: str,
+    subject: str,
+    body_text: str,
+    *,
+    from_email: str | None = None,
+    skip_unsubscribe: bool = False,
+    extra_headers: dict[str, str] | None = None,
+) -> bool:
+    """Send via Zoho SMTP with account rotation; retry next account on failure.
+
+    If ``from_email`` is set, send only from that account (no rotation failover).
+    """
     to = (to or "").strip()
     subject = subject or ""
     body_text = body_text or ""
+    from_email = (from_email or "").strip().lower() or None
 
     if not to:
         print("send_email error: empty recipient")
@@ -217,16 +267,69 @@ def send_email(to: str, subject: str, body_text: str) -> bool:
         )
         return False
 
+    if from_email:
+        match = next(
+            ((i, e, p) for i, (e, p) in enumerate(accounts) if e.lower() == from_email),
+            None,
+        )
+        if not match:
+            print(f"send_email error: from_email {from_email} not in SMTP_ACCOUNTS")
+            return False
+        idx, email, password = match
+        if _dry_run():
+            preview = _build_message(
+                to,
+                subject,
+                body_text,
+                email,
+                skip_unsubscribe=skip_unsubscribe,
+                extra_headers=extra_headers,
+            )
+            print("=== DRY_RUN email ===")
+            print(f"Transport: Zoho SMTP_SSL {SMTP_SERVER}:{SMTP_PORT}")
+            print(f"From (fixed): {email}")
+            print(f"To: {to}")
+            print(f"Subject: {subject}")
+            if not skip_unsubscribe:
+                print(f"List-Unsubscribe: {preview['List-Unsubscribe']}")
+                print(f"List-Unsubscribe-Post: {preview['List-Unsubscribe-Post']}")
+            print(preview.get_payload()[0].get_payload(decode=True).decode("utf-8"))
+            print("=== end DRY_RUN ===")
+            return True
+        try:
+            _send_via_zoho(
+                to,
+                subject,
+                body_text,
+                email,
+                password,
+                skip_unsubscribe=skip_unsubscribe,
+                extra_headers=extra_headers,
+            )
+            print(f"sent via Zoho {email} (fixed account {idx + 1}/{len(accounts)})")
+            return True
+        except Exception as e:
+            print(f"send_email Zoho fail fixed account {email}: {e}")
+            return False
+
     if _dry_run():
         email, _, idx = _next_account(accounts)
-        preview = _build_message(to, subject, body_text, email)
+        preview = _build_message(
+            to,
+            subject,
+            body_text,
+            email,
+            skip_unsubscribe=skip_unsubscribe,
+            extra_headers=extra_headers,
+        )
         print("=== DRY_RUN email ===")
         print(f"Transport: Zoho SMTP_SSL {SMTP_SERVER}:{SMTP_PORT}")
         print(f"From (rotated #{idx + 1}/{len(accounts)}): {email}")
         print(f"To: {to}")
         print(f"Subject: {subject}")
-        print(f"List-Unsubscribe: {preview['List-Unsubscribe']}")
-        print(f"List-Unsubscribe-Post: {preview['List-Unsubscribe-Post']}")
+        if not skip_unsubscribe:
+            print(f"List-Unsubscribe: {preview['List-Unsubscribe']}")
+            print(f"List-Unsubscribe-Post: {preview['List-Unsubscribe-Post']}")
         print(preview.get_payload()[0].get_payload(decode=True).decode("utf-8"))
         print("=== end DRY_RUN ===")
         _advance_rotation(idx, len(accounts))
@@ -241,7 +344,15 @@ def send_email(to: str, subject: str, body_text: str) -> bool:
         idx = (start + attempt) % n
         email, password = accounts[idx]
         try:
-            _send_via_zoho(to, subject, body_text, email, password)
+            _send_via_zoho(
+                to,
+                subject,
+                body_text,
+                email,
+                password,
+                skip_unsubscribe=skip_unsubscribe,
+                extra_headers=extra_headers,
+            )
             _advance_rotation(idx, n)
             print(f"sent via Zoho {email} (account {idx + 1}/{n})")
             return True

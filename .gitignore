@@ -10,6 +10,7 @@ data/signal_cache.json
 data/template_rotation.json
 data/template_stats.json
 data/smtp_rotation.json
+data/warmup_schedule.json
 data/dry_run.json
 data/dry_run.json.txt
 data/drafts/
