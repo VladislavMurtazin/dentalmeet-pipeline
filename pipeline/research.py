@@ -9,12 +9,17 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
 import time
 from datetime import date
 from pathlib import Path
 
 import requests
+
+logger = logging.getLogger(__name__)
+logger.propagate = False
+logger.addHandler(logging.NullHandler())
 
 # Header aliases (case-insensitive) → Apollo-like field names
 HEADER_MAP = {
@@ -289,18 +294,98 @@ def _enrich_batch(people: list[dict]) -> list[dict] | None:
     details = [{"id": p["id"]} for p in people if p.get("id")]
     if not details:
         return []
-    r = requests.post(
-        f"{APOLLO_BASE}/people/bulk_match",
-        headers=_headers(),
-        params={"reveal_personal_emails": "false", "reveal_phone_number": "false"},
-        json={"details": details},
-        timeout=60,
-    )
-    if r.status_code == 403:
-        return None
-    r.raise_for_status()
-    matches = r.json().get("matches") or []
-    return [m for m in matches if m]
+
+    def _post() -> requests.Response:
+        return requests.post(
+            f"{APOLLO_BASE}/people/bulk_match",
+            headers=_headers(),
+            params={"reveal_personal_emails": "false", "reveal_phone_number": "false"},
+            json={"details": details},
+            timeout=60,
+        )
+
+    try:
+        r = _post()
+        if r.status_code == 403:
+            return None
+        r.raise_for_status()
+        data = r.json()
+        matches = data.get("matches") or []
+        return [m for m in matches if m]
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 0
+        if status == 422:
+            logger.warning(
+                "Apollo bulk_match returned 422 for batch of %s people, "
+                "skipping this batch",
+                len(people),
+            )
+            print(
+                f"WARN: Apollo bulk_match returned 422 for batch of "
+                f"{len(people)} people, skipping this batch",
+                flush=True,
+            )
+            return []
+        if status == 429:
+            logger.warning(
+                "Apollo rate limit hit, sleeping 60s and retrying once"
+            )
+            print(
+                "WARN: Apollo rate limit hit, sleeping 60s and retrying once",
+                flush=True,
+            )
+            time.sleep(60)
+            try:
+                r2 = _post()
+                if r2.status_code == 403:
+                    return None
+                r2.raise_for_status()
+                matches = r2.json().get("matches") or []
+                return [m for m in matches if m]
+            except Exception as retry_err:
+                logger.warning(
+                    "bulk_match failed after 429 retry: %s, skipping batch",
+                    retry_err,
+                )
+                print(
+                    f"WARN: bulk_match failed after 429 retry: {retry_err}, "
+                    "skipping batch",
+                    flush=True,
+                )
+                return []
+        if status >= 500:
+            logger.warning(
+                "Apollo server error %s, skipping batch",
+                status,
+            )
+            print(
+                f"WARN: Apollo server error {status}, skipping batch",
+                flush=True,
+            )
+            return []
+        raise
+    except Exception as e:
+        logger.warning("bulk_match failed: %s, skipping batch", e)
+        print(f"WARN: bulk_match failed: {e}, skipping batch", flush=True)
+        return []
+
+
+def _person_enrichable(p: dict) -> bool:
+    """True if person has enough fields for a safe bulk_match attempt."""
+    if not p.get("id"):
+        return False
+    first = (p.get("first_name") or "").strip()
+    last = (p.get("last_name") or p.get("last_name_obfuscated") or "").strip()
+    if not first and not last:
+        return False
+    email = (p.get("email") or "").strip()
+    linkedin = str(p.get("linkedin_url") or p.get("linkedin") or "").strip()
+    # Apollo api_search often omits cleartext email/linkedin but sets has_email;
+    # bulk_match can still reveal via id in that case.
+    has_email_flag = bool(p.get("has_email"))
+    if not email and not linkedin and not has_email_flag:
+        return False
+    return True
 
 
 def _attach_domains(people: list[dict]) -> list[dict]:
@@ -346,7 +431,22 @@ def _enrich_people(found: list[dict]) -> list[dict]:
     if not found:
         return []
 
-    enriched = _enrich_batch(found[:10])
+    enrichable: list[dict] = []
+    skipped = 0
+    for p in found:
+        if _person_enrichable(p):
+            enrichable.append(p)
+        else:
+            skipped += 1
+    if skipped:
+        msg = f"Skipped {skipped} people with insufficient data for enrichment"
+        logger.warning(msg)
+        print(msg, flush=True)
+
+    if not enrichable:
+        return [_normalize_search_person(p) for p in found]
+
+    enriched = _enrich_batch(enrichable[:10])
     if enriched is None:
         print(
             "WARN: Apollo API key cannot access people/bulk_match (emails).\n"
@@ -355,8 +455,8 @@ def _enrich_people(found: list[dict]) -> list[dict]:
         return [_normalize_search_person(p) for p in found]
 
     people = list(enriched)
-    for i in range(10, len(found), 10):
-        batch = _enrich_batch(found[i : i + 10]) or []
+    for i in range(10, len(enrichable), 10):
+        batch = _enrich_batch(enrichable[i : i + 10]) or []
         people.extend(batch)
         time.sleep(0.2)
     for p in people:
@@ -468,7 +568,21 @@ def _run_one_variant(
     if not found:
         return [], 0, 0
 
-    people = _enrich_people(found)
+    keyword = (variant.get("q_keywords") or label or "?").strip()
+    try:
+        people = _enrich_people(found)
+    except Exception as e:
+        logger.error(
+            "Variant '%s' enrichment failed: %s, continuing",
+            keyword,
+            e,
+        )
+        print(
+            f"ERROR: Variant '{keyword}' enrichment failed: {e}, continuing",
+            flush=True,
+        )
+        people = []
+
     new_people, dupes = _filter_new_leads(
         people,
         sheet_emails=sheet_emails,
