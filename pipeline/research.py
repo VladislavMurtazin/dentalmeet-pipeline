@@ -60,8 +60,14 @@ INTL_LOCATIONS = ["United Kingdom", "Canada", "Australia"]
 PER_PAGE = 50
 MAX_PAGES = 1
 # Batch --enrich volume
-BATCH_PER_PAGE = 50
-BATCH_MAX_PAGES = 2
+BATCH_PER_PAGE = 100
+BATCH_MAX_PAGES = 5
+BATCH_LOCATIONS = [
+    "United States",
+    "Canada",
+    "United Kingdom",
+    "Australia",
+]
 
 US_MIN_HITS_BEFORE_INTL = 20
 MAX_SEEN_IDS = 5000
@@ -86,7 +92,8 @@ DECISION_TITLE_TOKENS = (
     "chief",
 )
 
-VARIANTS = [
+# Cron rotates over these 15 (verified email filter + US only)
+CRON_VARIANTS = [
     {"keyword": "dental marketing", "industry": "Marketing and Advertising"},
     {"keyword": "dental SEO", "industry": "Marketing and Advertising"},
     {"keyword": "dentist marketing", "industry": "Marketing and Advertising"},
@@ -104,6 +111,38 @@ VARIANTS = [
     {"keyword": "smile marketing", "industry": "Marketing and Advertising"},
 ]
 
+# Batch --enrich: 25 niche keywords (no email_status filter; multi-geo)
+BATCH_KEYWORDS = [
+    "orthodontist marketing",
+    "dental implants marketing",
+    "cosmetic dentistry marketing",
+    "dental clinic marketing",
+    "dentist lead generation",
+    "dental growth agency",
+    "healthcare advertising agency",
+    "dental marketing consultant",
+    "dental seo agency",
+    "dentist seo",
+    "dental reputation management",
+    "dental website design",
+    "healthcare branding agency",
+    "dental marketing services",
+    "dental practice marketing",
+    "dental video marketing",
+    "dental content marketing",
+    "medical marketing agency",
+    "healthcare digital marketing",
+    "dental agency",
+    "marketing agency for dentists",
+    "dental patient marketing",
+    "dentist growth",
+    "dental outreach",
+    "dental b2b marketing",
+]
+
+# Back-compat alias
+VARIANTS = CRON_VARIANTS
+
 
 def _log(msg: str, *, level: int = logging.INFO) -> None:
     logger.log(level, msg)
@@ -111,27 +150,41 @@ def _log(msg: str, *, level: int = logging.INFO) -> None:
 
 
 def get_daily_search_variants(day_of_month: int | None = None) -> list[dict]:
-    """Return 3 of 15 variants rotating by day-of-month (cron mode)."""
+    """Return 3 of CRON_VARIANTS rotating by day-of-month (cron mode)."""
     day = int(day_of_month if day_of_month is not None else date.today().day)
-    base = (max(1, day) - 1) % len(VARIANTS)
-    picks = [base, (base + 5) % len(VARIANTS), (base + 10) % len(VARIANTS)]
-    return [_variant_from_spec(idx) for idx in picks]
+    base = (max(1, day) - 1) % len(CRON_VARIANTS)
+    picks = [base, (base + 5) % len(CRON_VARIANTS), (base + 10) % len(CRON_VARIANTS)]
+    return [_cron_variant_from_spec(idx) for idx in picks]
 
 
 def get_all_search_variants() -> list[dict]:
-    """All 15 variants (batch --enrich mode)."""
-    return [_variant_from_spec(i) for i in range(len(VARIANTS))]
+    """All batch keywords (multi-geo, no email_status filter)."""
+    return [_batch_variant_from_keyword(i, kw) for i, kw in enumerate(BATCH_KEYWORDS)]
 
 
-def _variant_from_spec(idx: int) -> dict:
-    spec = VARIANTS[idx]
+def _cron_variant_from_spec(idx: int) -> dict:
+    spec = CRON_VARIANTS[idx]
     return {
         "q_keywords": spec["keyword"],
         "industry": spec["industry"],
         "organization_locations": list(US_LOCATION),
         "person_titles": list(PERSON_TITLES),
         "email_status": ["verified"],
+        "require_verified_email": True,
         "region": "US",
+        "variant_index": idx,
+    }
+
+
+def _batch_variant_from_keyword(idx: int, keyword: str) -> dict:
+    return {
+        "q_keywords": keyword,
+        "industry": "",
+        "organization_locations": list(BATCH_LOCATIONS),
+        "person_titles": list(PERSON_TITLES),
+        "email_status": [],
+        "require_verified_email": False,
+        "region": "US/CA/UK/AU",
         "variant_index": idx,
     }
 
@@ -143,6 +196,7 @@ def get_international_variant() -> dict:
         "organization_locations": list(INTL_LOCATIONS),
         "person_titles": list(PERSON_TITLES),
         "email_status": ["verified"],
+        "require_verified_email": True,
         "region": "UK/CA/AU",
         "variant_index": -1,
     }
@@ -182,13 +236,19 @@ def print_research_plan(
         f"max_pages={pages}, new_leads_cap={cap}",
         flush=True,
     )
-    print(f"Variants ({len(variants)} of {len(VARIANTS)}):", flush=True)
+    print(f"Variants ({len(variants)}):", flush=True)
     for i, v in enumerate(variants, start=1):
         print(
-            f"  {i}. [{v.get('variant_index')}] keyword={v['q_keywords']!r}",
+            f"  {i}. [{v.get('variant_index')}] keyword={v['q_keywords']!r} "
+            f"geo={v.get('region')}",
             flush=True,
         )
     if enrich:
+        print(
+            f"Batch: no email_status filter, per_page={BATCH_PER_PAGE}, "
+            f"max_pages={BATCH_MAX_PAGES}, locations={BATCH_LOCATIONS}",
+            flush=True,
+        )
         print(
             "Guards: title filter + sheet dedup (PersonID/LinkedIn/name+org) "
             "BEFORE any enrich call",
@@ -278,13 +338,27 @@ def _identity_key(first: str, last: str, org: str) -> str:
     return f"{f}|{l}|{o}"
 
 
-def _load_sheet_dedup_index() -> dict[str, set[str]]:
-    """Load PersonID / LinkedIn / identity / email sets from Agencies sheet."""
-    index = {
+def _load_sheet_dedup_index() -> dict:
+    """Load PersonID / LinkedIn / identity / email sets from Agencies sheet.
+
+    Also attaches reverse maps (value → sheet row info) for DEBUG diagnostics.
+    Dedup keys themselves are unchanged.
+    """
+    index: dict = {
         "person_ids": set(),
         "linkedins": set(),
         "identities": set(),
         "emails": set(),
+        # debug / provenance (does not affect match logic)
+        "meta": {
+            "sheet_rows": 0,
+            "columns_loaded": [],
+            "header": [],
+        },
+        "person_id_rows": {},  # pid -> row info
+        "linkedin_rows": {},
+        "identity_rows": {},
+        "email_rows": {},
     }
     try:
         from .to_sheets import HEADERS, get_worksheet
@@ -294,12 +368,13 @@ def _load_sheet_dedup_index() -> dict[str, set[str]]:
         if not values:
             return index
         header = [(h or "").strip() for h in values[0]]
+        index["meta"]["header"] = header
+        index["meta"]["sheet_rows"] = max(0, len(values) - 1)
 
         def col(name: str) -> int | None:
             try:
                 return header.index(name)
             except ValueError:
-                # fall back to canonical HEADERS order if header row incomplete
                 try:
                     return HEADERS.index(name)
                 except ValueError:
@@ -310,37 +385,70 @@ def _load_sheet_dedup_index() -> dict[str, set[str]]:
         i_email = col("Email")
         i_pid = col("PersonID")
         i_li = col("LinkedIn")
+        index["meta"]["columns_loaded"] = [
+            name
+            for name, idx in (
+                ("Company", i_company),
+                ("Contact", i_contact),
+                ("Email", i_email),
+                ("PersonID", i_pid),
+                ("LinkedIn", i_li),
+            )
+            if idx is not None
+        ]
 
-        for row in values[1:]:
+        for row_i, row in enumerate(values[1:], start=2):
             def cell(i: int | None) -> str:
                 if i is None or i >= len(row):
                     return ""
                 return (row[i] or "").strip()
 
             email = cell(i_email).lower()
-            if email:
-                index["emails"].add(email)
             pid = cell(i_pid)
-            if pid:
-                index["person_ids"].add(pid)
             li = _norm_linkedin(cell(i_li))
-            if li:
-                index["linkedins"].add(li)
             contact = cell(i_contact)
             company = cell(i_company)
             parts = contact.split(None, 1)
             first = parts[0] if parts else ""
             last = parts[1] if len(parts) > 1 else ""
             ident = _identity_key(first, last, company)
+
+            row_info = {
+                "sheet_row": row_i,
+                "contact": contact,
+                "company": company,
+                "email": email,
+                "person_id": pid,
+                "linkedin": cell(i_li),
+            }
+
+            if email:
+                index["emails"].add(email)
+                index["email_rows"].setdefault(email, row_info)
+            if pid:
+                index["person_ids"].add(pid)
+                index["person_id_rows"].setdefault(pid, row_info)
+            if li:
+                index["linkedins"].add(li)
+                index["linkedin_rows"].setdefault(li, row_info)
             if ident:
                 index["identities"].add(ident)
+                index["identity_rows"].setdefault(ident, row_info)
     except Exception as e:
         _log(f"WARN: sheet dedup index unavailable: {e}", level=logging.WARNING)
     return index
 
 
-def _is_duplicate_before_enrich(p: dict, index: dict[str, set[str]]) -> bool:
-    """True if person already in sheet / known — do NOT spend credits."""
+def _is_duplicate_before_enrich(p: dict, index: dict) -> bool:
+    """True if person already in sheet / known — do NOT spend credits.
+
+    Comparison order (unchanged):
+      1. person_id / id  ∈ index['person_ids']  (from sheet PersonID column)
+      2. normalized linkedin_url ∈ index['linkedins']  (from sheet LinkedIn)
+      3. identity key first|last|org ∈ index['identities']
+         (from sheet Contact split + Company)
+      4. email ∈ index['emails']  (from sheet Email)
+    """
     pid = str(p.get("id") or p.get("person_id") or "").strip()
     if pid and pid in index["person_ids"]:
         return True
@@ -364,6 +472,124 @@ def _is_duplicate_before_enrich(p: dict, index: dict[str, set[str]]) -> bool:
     return False
 
 
+def _explain_duplicate(
+    p: dict,
+    *,
+    index: dict,
+    seen_ids: set[str],
+    state_ids: set[str],
+) -> dict:
+    """Explain WHY a person would be skipped (mirrors batch dedup checks).
+
+    Batch loop skips when: ``pid in seen_ids`` OR ``_is_duplicate_before_enrich``.
+    ``seen_ids`` at start = research_state last_seen_ids ∪ sheet PersonIDs.
+    """
+    pid = str(p.get("id") or p.get("person_id") or "").strip()
+    first = (p.get("first_name") or "").strip()
+    last = (
+        p.get("last_name") or p.get("last_name_obfuscated") or ""
+    ).strip()
+    org = p.get("organization") or {}
+    org_name = str(
+        (org.get("name") if isinstance(org, dict) else "")
+        or p.get("organization_name")
+        or ""
+    )
+    li_raw = _person_linkedin(p)
+    li = _norm_linkedin(li_raw)
+    email = (_person_email(p) or "").lower()
+    ident = _identity_key(first, last, org_name)
+
+    name = f"{first} {last}".strip() or "(no name)"
+    base = {
+        "name": name,
+        "company": org_name or "(no company)",
+        "linkedin_url": li_raw or "(none)",
+        "person_id": pid or "(none)",
+        "identity_key": ident or "(none)",
+        "email": email or "(none)",
+    }
+
+    # Order matches the batch loop: seen_ids first, then sheet index checks
+    if pid and pid in seen_ids:
+        if pid in state_ids and pid not in index.get("person_ids", set()):
+            return {
+                **base,
+                "matched_field": "last_seen_ids (research_state.json person_id)",
+                "matched_value": pid,
+                "matched_sheet_row": None,
+                "note": (
+                    "ID was seen in a prior research run; "
+                    "may NEVER have been saved to sheet"
+                ),
+            }
+        sheet_hit = index.get("person_id_rows", {}).get(pid)
+        return {
+            **base,
+            "matched_field": "seen_ids / PersonID",
+            "matched_value": pid,
+            "matched_sheet_row": sheet_hit,
+        }
+
+    if pid and pid in index.get("person_ids", set()):
+        return {
+            **base,
+            "matched_field": "PersonID (sheet)",
+            "matched_value": pid,
+            "matched_sheet_row": index.get("person_id_rows", {}).get(pid),
+        }
+    if li and li in index.get("linkedins", set()):
+        return {
+            **base,
+            "matched_field": "LinkedIn (normalized)",
+            "matched_value": li,
+            "matched_sheet_row": index.get("linkedin_rows", {}).get(li),
+        }
+    if ident and ident in index.get("identities", set()):
+        return {
+            **base,
+            "matched_field": "identity first|last|organization (Contact+Company)",
+            "matched_value": ident,
+            "matched_sheet_row": index.get("identity_rows", {}).get(ident),
+        }
+    if email and email in index.get("emails", set()):
+        return {
+            **base,
+            "matched_field": "Email",
+            "matched_value": email,
+            "matched_sheet_row": index.get("email_rows", {}).get(email),
+        }
+    return {
+        **base,
+        "matched_field": "(unknown - not a duplicate under current checks)",
+        "matched_value": "",
+        "matched_sheet_row": None,
+    }
+
+
+def _print_dedup_key_docs() -> None:
+    _log("=== DEDUP KEYS (batch mode, before enrich) ===")
+    _log("Checks (in order):")
+    _log("  1. person_id / Apollo id  in  seen_ids")
+    _log(
+        "     seen_ids start = research_state.json['last_seen_ids'] "
+        "UNION sheet column PersonID"
+    )
+    _log(
+        "  2. PersonID               in  sheet PersonID column  "
+        "(via _is_duplicate_before_enrich)"
+    )
+    _log("  3. normalized linkedin    in  sheet LinkedIn column")
+    _log("  4. identity key           in  sheet Contact+Company")
+    _log("     identity = lower(first)|lower(last)|lower(organization)")
+    _log("     Contact is split on first space -> first / rest=last")
+    _log("  5. email                  in  sheet Email column")
+    _log(
+        "Also: within this run, accepted candidates reserve their "
+        "person_id / linkedin / identity so later candidates can match them."
+    )
+
+
 def _is_decision_maker(title: str) -> bool:
     t = (title or "").strip().lower()
     if not t:
@@ -384,6 +610,7 @@ def _search_apollo(
     person_titles: list[str] | None = None,
     industry: str | None = None,
     per_page: int = PER_PAGE,
+    require_verified_email: bool = True,
 ) -> list[dict]:
     payload: dict = {
         "q_keywords": q_keywords,
@@ -392,9 +619,11 @@ def _search_apollo(
         "organization_num_employees_ranges": list(EMPLOYEE_RANGES),
         "page": page,
         "per_page": per_page,
-        "email_status": ["verified"],
-        "contact_email_status": ["verified"],
     }
+    # Cron/credit-safe: verified filter. Batch --enrich: omit (enrich reveals emails).
+    if require_verified_email:
+        payload["email_status"] = ["verified"]
+        payload["contact_email_status"] = ["verified"]
     if industry:
         payload["q_organization_keyword_tags"] = [industry]
 
@@ -414,6 +643,7 @@ def _search_variant_pages(
     all_people: list[dict] = []
     seen_ids: set[str] = set()
     page_counts: list[tuple[int, int]] = []
+    require_verified = bool(variant.get("require_verified_email", True))
 
     for page in range(1, max_pages + 1):
         try:
@@ -424,6 +654,7 @@ def _search_variant_pages(
                 person_titles=list(variant.get("person_titles") or PERSON_TITLES),
                 industry=(variant.get("industry") or "").strip() or None,
                 per_page=per_page,
+                require_verified_email=require_verified,
             )
         except Exception as e:
             _log(f"  WARN page {page} failed: {e}", level=logging.WARNING)
@@ -855,48 +1086,64 @@ def _run_credit_safe(
     return final
 
 
-def _run_batch_enrich(*, enrich_limit: int, limit: int | None) -> list[dict]:
-    """Manual batch: search all variants → guards → enrich ≤N → save with email."""
-    n = max(1, int(enrich_limit))
-    save_cap = n if limit is None else min(n, max(1, int(limit)))
-
-    _log(
-        f"BATCH MODE: enrich up to {n} NEW decision-makers "
-        f"(save_cap={save_cap})"
-    )
-    _log("Guards: title filter + sheet dedup BEFORE any enrichment call")
-
-    state = _load_state()
-    index = _load_sheet_dedup_index()
-    seen_ids = {str(x) for x in (state.get("last_seen_ids") or []) if x}
-    seen_ids |= set(index["person_ids"])
-
-    variants = get_all_search_variants()
-    _log(
-        f"Searching all {len(variants)} variants "
-        f"(per_page={BATCH_PER_PAGE}, max_pages={BATCH_MAX_PAGES})"
-    )
-    raw, total_hits = _search_collect(
-        variants, per_page=BATCH_PER_PAGE, max_pages=BATCH_MAX_PAGES
-    )
-    x_raw = len(raw)
-
-    # Title filter
-    decision = [p for p in raw if _is_decision_maker(p.get("title") or "")]
-    y_decision = len(decision)
-
-    # Dedup BEFORE enrich (critical — no credits on duplicates)
+def _dedup_decision_makers(
+    decision: list[dict],
+    *,
+    index: dict,
+    seen_ids: set[str],
+    state_ids: set[str],
+    debug: bool = False,
+    debug_limit: int = 10,
+) -> tuple[list[dict], int]:
+    """Apply batch pre-enrich dedup. Logic unchanged; optional DEBUG samples."""
     new_pool: list[dict] = []
     skipped_dup = 0
+    debug_shown = 0
+
     for p in decision:
         pid = str(p.get("id") or "").strip()
         if not pid:
             continue
-        if pid in seen_ids or _is_duplicate_before_enrich(p, index):
+        is_dup = pid in seen_ids or _is_duplicate_before_enrich(p, index)
+        if is_dup:
             skipped_dup += 1
+            if debug and debug_shown < debug_limit:
+                info = _explain_duplicate(
+                    p, index=index, seen_ids=seen_ids, state_ids=state_ids
+                )
+                debug_shown += 1
+                _log(f"--- DEBUG skipped_dup #{debug_shown} ---")
+                _log(
+                    f"  person: {info['name']} | company: {info['company']}"
+                )
+                _log(
+                    f"  linkedin_url: {info['linkedin_url']} | "
+                    f"person_id: {info['person_id']}"
+                )
+                _log(
+                    f"  matched_field: {info['matched_field']}"
+                )
+                _log(
+                    f"  matched_value: {info['matched_value']}"
+                )
+                row = info.get("matched_sheet_row")
+                if row:
+                    _log(
+                        f"  matched_sheet_row: #{row.get('sheet_row')} "
+                        f"contact={row.get('contact')!r} "
+                        f"company={row.get('company')!r} "
+                        f"email={row.get('email')!r} "
+                        f"PersonID={row.get('person_id')!r} "
+                        f"LinkedIn={row.get('linkedin')!r}"
+                    )
+                else:
+                    _log("  matched_sheet_row: (none - not a sheet row match)")
+                if info.get("note"):
+                    _log(f"  note: {info['note']}")
             if pid:
                 seen_ids.add(pid)
             continue
+
         new_pool.append(p)
         seen_ids.add(pid)
         # Reserve identity/linkedin in index so we don't enrich siblings twice
@@ -911,6 +1158,118 @@ def _run_batch_enrich(*, enrich_limit: int, limit: int | None) -> list[dict]:
         )
         if ident:
             index["identities"].add(ident)
+
+    return new_pool, skipped_dup
+
+
+def run_debug_dedup() -> None:
+    """Small search + dedup diagnostics; no enrichment, no sheet writes."""
+    _log("=== DEBUG-DEDUP (no enrichment, no sheet writes) ===")
+    _print_dedup_key_docs()
+
+    state = _load_state()
+    state_ids = {str(x) for x in (state.get("last_seen_ids") or []) if x}
+    index = _load_sheet_dedup_index()
+    meta = index.get("meta") or {}
+
+    _log("=== SHEET DEDUP SOURCE ===")
+    _log(f"Agencies data rows (excl. header): {meta.get('sheet_rows', 0)}")
+    _log(f"Header row: {meta.get('header', [])}")
+    _log(f"Columns loaded for comparison: {meta.get('columns_loaded', [])}")
+    _log(f"Index sizes: PersonID={len(index['person_ids'])} "
+         f"LinkedIn={len(index['linkedins'])} "
+         f"identity={len(index['identities'])} "
+         f"email={len(index['emails'])}")
+    _log(
+        f"research_state last_seen_ids: {len(state_ids)} "
+        f"(these feed seen_ids even if not on the sheet)"
+    )
+
+    seen_ids = set(state_ids) | set(index["person_ids"])
+    _log(f"seen_ids at start (state UNION PersonID): {len(seen_ids)}")
+
+    # 1–2 batch variants only
+    variants = get_all_search_variants()[:2]
+    _log(
+        f"Searching {len(variants)} variants for sample "
+        f"(per_page={min(50, BATCH_PER_PAGE)}, max_pages=1, email_status=OFF)"
+    )
+    raw, total_hits = _search_collect(variants, per_page=50, max_pages=1)
+    decision = [p for p in raw if _is_decision_maker(p.get("title") or "")]
+    _log(f"Sample: raw={len(raw)} decision-makers={len(decision)} (hits={total_hits})")
+
+    new_pool, skipped_dup = _dedup_decision_makers(
+        decision,
+        index=index,
+        seen_ids=seen_ids,
+        state_ids=state_ids,
+        debug=True,
+        debug_limit=10,
+    )
+    _log(
+        f"Sample dedup result: new_after_dedup={len(new_pool)} "
+        f"skipped_dup={skipped_dup}"
+    )
+    _log("=== END DEBUG-DEDUP ===")
+
+
+def _run_batch_enrich(
+    *, enrich_limit: int, limit: int | None, debug_dedup: bool = False
+) -> list[dict]:
+    """Manual batch: search all variants → guards → enrich ≤N → save with email."""
+    n = max(1, int(enrich_limit))
+    save_cap = n if limit is None else min(n, max(1, int(limit)))
+
+    _log(
+        f"BATCH MODE: enrich up to {n} NEW decision-makers "
+        f"(save_cap={save_cap})"
+    )
+    _log("Guards: title filter + sheet dedup BEFORE any enrichment call")
+    if debug_dedup:
+        _print_dedup_key_docs()
+
+    state = _load_state()
+    state_ids = {str(x) for x in (state.get("last_seen_ids") or []) if x}
+    index = _load_sheet_dedup_index()
+    meta = index.get("meta") or {}
+    if debug_dedup:
+        _log("=== SHEET DEDUP SOURCE ===")
+        _log(f"Agencies data rows (excl. header): {meta.get('sheet_rows', 0)}")
+        _log(f"Columns loaded for comparison: {meta.get('columns_loaded', [])}")
+        _log(
+            f"Index sizes: PersonID={len(index['person_ids'])} "
+            f"LinkedIn={len(index['linkedins'])} "
+            f"identity={len(index['identities'])} "
+            f"email={len(index['emails'])}"
+        )
+        _log(f"research_state last_seen_ids: {len(state_ids)}")
+
+    seen_ids = set(state_ids) | set(index["person_ids"])
+
+    variants = get_all_search_variants()
+    _log(
+        f"Searching all {len(variants)} batch keywords "
+        f"(per_page={BATCH_PER_PAGE}, max_pages={BATCH_MAX_PAGES}, "
+        f"geo={BATCH_LOCATIONS}, email_status=OFF)"
+    )
+    raw, total_hits = _search_collect(
+        variants, per_page=BATCH_PER_PAGE, max_pages=BATCH_MAX_PAGES
+    )
+    x_raw = len(raw)
+
+    # Title filter
+    decision = [p for p in raw if _is_decision_maker(p.get("title") or "")]
+    y_decision = len(decision)
+
+    # Dedup BEFORE enrich (critical — no credits on duplicates)
+    new_pool, skipped_dup = _dedup_decision_makers(
+        decision,
+        index=index,
+        seen_ids=seen_ids,
+        state_ids=state_ids,
+        debug=debug_dedup,
+        debug_limit=10,
+    )
 
     z_new = len(new_pool)
     _log(

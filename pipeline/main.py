@@ -77,6 +77,13 @@ def run_research(args: argparse.Namespace) -> None:
     limit = getattr(args, "limit", None)
     enrich = getattr(args, "enrich", None)
 
+    # --debug-dedup: small search + dedup diagnostics only (no enrich / no writes)
+    if getattr(args, "debug_dedup", False):
+        from .research import run_debug_dedup
+
+        run_debug_dedup()
+        return
+
     # --dry-run: print search plan only (no Apollo / Sheets)
     if args.dry_run:
         from .research import print_research_plan
@@ -221,6 +228,11 @@ def main() -> None:
         "--from-csv",
         action="store_true",
         help="Force CSV mode (ignore APOLLO_KEY)",
+    )
+    p_research.add_argument(
+        "--debug-dedup",
+        action="store_true",
+        help="Diagnose batch dedup (1–2 search variants, no enrich, no sheet writes)",
     )
 
     p_send = sub.add_parser("send", help="Send first-touch emails to unsent leads")
