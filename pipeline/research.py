@@ -1,8 +1,8 @@
 """Find agency founders via Apollo API or local CSV fallback.
 
-Daily run: 5 broad US keyword variants (up to 3 pages × 100 each),
-optional international fallback if US yield is low, then dedupe and
-return only NEW leads vs Agencies sheet / research_state.json.
+CREDIT-SAFE MODE: search with email_status=verified only.
+Enrichment (bulk_match / people/enrich) is DISABLED — those spend email credits.
+Search hits must already include cleartext verified email.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import csv
 import json
 import logging
 import os
+import re
 import time
 from datetime import date
 from pathlib import Path
@@ -18,10 +19,11 @@ from pathlib import Path
 import requests
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 logger.propagate = False
-logger.addHandler(logging.NullHandler())
+if not logger.handlers:
+    logger.addHandler(logging.NullHandler())
 
-# Header aliases (case-insensitive) → Apollo-like field names
 HEADER_MAP = {
     "first_name": "first_name",
     "first name": "first_name",
@@ -50,72 +52,109 @@ PERSON_TITLES = [
     "Managing Director",
 ]
 
-# Variant 5: healthcare marketing + dental-leaning titles
-DENTAL_TITLES = PERSON_TITLES + [
-    "Dental Marketing Director",
-    "Dental Marketing Manager",
-    "VP of Marketing",
-    "Head of Marketing",
-]
-
 EMPLOYEE_RANGES = ["1-10", "11-50", "51-200"]
 US_LOCATION = ["United States"]
 INTL_LOCATIONS = ["United Kingdom", "Canada", "Australia"]
 
-PER_PAGE = 100
-MAX_PAGES = 3
+PER_PAGE = 50
+MAX_PAGES = 1
 US_MIN_HITS_BEFORE_INTL = 20
 MAX_SEEN_IDS = 5000
-NEW_LEADS_CAP = 100  # max NEW leads returned / added per research run
+NEW_LEADS_CAP = 30
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", re.I)
+
+# Enriched column value: data came from search, zero email credits spent
+ENRICHED_SEARCH = "SEARCH"
+
+VARIANTS = [
+    {"keyword": "dental marketing", "industry": "Marketing and Advertising"},
+    {"keyword": "dental SEO", "industry": "Marketing and Advertising"},
+    {"keyword": "dentist marketing", "industry": "Marketing and Advertising"},
+    {"keyword": "dental web design", "industry": "Web Development"},
+    {"keyword": "healthcare marketing", "industry": "Marketing and Advertising"},
+    {"keyword": "dental advertising", "industry": "Advertising Services"},
+    {"keyword": "dental lead generation", "industry": "Marketing and Advertising"},
+    {"keyword": "marketing for dentists", "industry": "Marketing and Advertising"},
+    {"keyword": "dental patient acquisition", "industry": "Marketing and Advertising"},
+    {"keyword": "dental practice growth", "industry": "Marketing and Advertising"},
+    {"keyword": "dentist ads", "industry": "Advertising Services"},
+    {"keyword": "dental branding", "industry": "Marketing and Advertising"},
+    {"keyword": "dental social media", "industry": "Marketing and Advertising"},
+    {"keyword": "dental PPC", "industry": "Advertising Services"},
+    {"keyword": "smile marketing", "industry": "Marketing and Advertising"},
+]
 
 
-def get_daily_search_variants(day_of_year: int | None = None) -> list[dict]:
-    """Return the 5 broad US search variants (day_of_year unused — fixed set).
+def _log(msg: str, *, level: int = logging.INFO) -> None:
+    logger.log(level, msg)
+    print(msg, flush=True)
 
-    Each item has q_keywords, organization_locations, person_titles, region label.
-    """
-    _ = day_of_year  # kept for call-site compat
-    base = {
-        "organization_locations": list(US_LOCATION),
-        "person_titles": list(PERSON_TITLES),
-        "email_status": ["verified"],
-        "region": "US",
-    }
-    return [
-        {**base, "q_keywords": "dental marketing"},
-        {**base, "q_keywords": "dental SEO"},
-        {**base, "q_keywords": "dentist marketing"},
-        {**base, "q_keywords": "dental web design"},
-        {
-            **base,
-            "q_keywords": "healthcare marketing",
-            "person_titles": list(DENTAL_TITLES),
-        },
-    ]
+
+def get_daily_search_variants(day_of_month: int | None = None) -> list[dict]:
+    """Return 3 of 15 variants rotating by day-of-month."""
+    day = int(day_of_month if day_of_month is not None else date.today().day)
+    base = (max(1, day) - 1) % len(VARIANTS)
+    picks = [base, (base + 5) % len(VARIANTS), (base + 10) % len(VARIANTS)]
+    out: list[dict] = []
+    for idx in picks:
+        spec = VARIANTS[idx]
+        out.append(
+            {
+                "q_keywords": spec["keyword"],
+                "industry": spec["industry"],
+                "organization_locations": list(US_LOCATION),
+                "person_titles": list(PERSON_TITLES),
+                "email_status": ["verified"],
+                "region": "US",
+                "variant_index": idx,
+            }
+        )
+    return out
 
 
 def get_international_variant() -> dict:
-    """Optional 6th variant when US yield is low."""
     return {
         "q_keywords": "dental marketing agency",
+        "industry": "Marketing and Advertising",
         "organization_locations": list(INTL_LOCATIONS),
         "person_titles": list(PERSON_TITLES),
         "email_status": ["verified"],
         "region": "UK/CA/AU",
+        "variant_index": -1,
     }
 
 
 def get_daily_search_params(day_of_year: int | None = None) -> dict:
-    """Back-compat: first US variant expanded."""
-    v = get_daily_search_variants(day_of_year)[0]
+    _ = day_of_year
+    v = get_daily_search_variants()[0]
     return {
         "q_keywords": v["q_keywords"],
         "organization_locations": list(v["organization_locations"]),
         "region_code": "US",
         "person_titles": list(v["person_titles"]),
-        "email_status": list(v.get("email_status") or ["verified"]),
+        "email_status": ["verified"],
         "organization_num_employees_ranges": list(EMPLOYEE_RANGES),
     }
+
+
+def print_research_plan(*, limit: int | None = None) -> None:
+    today = date.today()
+    variants = get_daily_search_variants(today.day)
+    cap = NEW_LEADS_CAP if limit is None else min(NEW_LEADS_CAP, max(1, int(limit)))
+    print("=== RESEARCH DRY-RUN PLAN (no Apollo API calls) ===", flush=True)
+    print("Credit-safe mode: search with verified filter only, enrichment disabled", flush=True)
+    print(f"Date: {today.isoformat()} (day_of_month={today.day})", flush=True)
+    print(f"per_page={PER_PAGE}, max_pages={MAX_PAGES}, new_leads_cap={cap}", flush=True)
+    print(f"Variants today ({len(variants)} of {len(VARIANTS)}):", flush=True)
+    for i, v in enumerate(variants, start=1):
+        print(
+            f"  {i}. [{v.get('variant_index')}] keyword={v['q_keywords']!r} "
+            f"industry={v.get('industry')!r} email_status=['verified']",
+            flush=True,
+        )
+    print("Enrichment: DISABLED (0 email credits)", flush=True)
+    print("=== END PLAN ===", flush=True)
 
 
 def _variant_label(variant: dict) -> str:
@@ -147,14 +186,15 @@ def _save_run_state(
     last_seen_ids: list[str],
 ) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ids = last_seen_ids[-MAX_SEEN_IDS:]
     payload = {
         "date": date.today().isoformat(),
         "variants_run": variants_run,
         "total_hits": total_hits,
         "new_added": new_added,
         "duplicates_skipped": duplicates_skipped,
-        "last_seen_ids": ids,
+        "last_seen_ids": last_seen_ids[-MAX_SEEN_IDS:],
+        "credit_safe": True,
+        "enrichment": "disabled",
     }
     STATE_PATH.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
@@ -163,13 +203,12 @@ def _save_run_state(
 
 
 def _existing_sheet_emails() -> set[str]:
-    """Emails already in Agencies sheet (empty set if Sheets unavailable)."""
     try:
         from .to_sheets import _existing_emails, get_worksheet
 
         return _existing_emails(get_worksheet())
     except Exception as e:
-        print(f"WARN: could not load sheet emails for dedup: {e}")
+        _log(f"WARN: could not load sheet emails for dedup: {e}", level=logging.WARNING)
         return set()
 
 
@@ -189,9 +228,14 @@ def _search_apollo(
     person_titles: list[str] | None = None,
     email_status: list[str] | None = None,
     organization_num_employees_ranges: list[str] | None = None,
+    industry: str | None = None,
     per_page: int = PER_PAGE,
 ) -> list[dict]:
-    """People API search (mixed_people/api_search)."""
+    """People API search — always requests verified emails (no enrich calls)."""
+    status = list(email_status or ["verified"])
+    if "verified" not in status:
+        status = ["verified"]
+
     payload: dict = {
         "q_keywords": q_keywords,
         "person_titles": person_titles or list(PERSON_TITLES),
@@ -200,10 +244,12 @@ def _search_apollo(
         or list(EMPLOYEE_RANGES),
         "page": page,
         "per_page": per_page,
+        # Required on every search — cleartext verified emails in response
+        "email_status": ["verified"],
+        "contact_email_status": ["verified"],
     }
-    if email_status:
-        payload["contact_email_status"] = email_status
-        payload["email_status"] = email_status
+    if industry:
+        payload["q_organization_keyword_tags"] = [industry]
 
     r = requests.post(
         f"{APOLLO_BASE}/mixed_people/api_search",
@@ -216,7 +262,6 @@ def _search_apollo(
 
 
 def _search_variant_pages(variant: dict) -> tuple[list[dict], list[tuple[int, int]]]:
-    """Fetch up to MAX_PAGES for a variant. Returns (people, [(page, count), ...])."""
     all_people: list[dict] = []
     seen_ids: set[str] = set()
     page_counts: list[tuple[int, int]] = []
@@ -228,14 +273,12 @@ def _search_variant_pages(variant: dict) -> tuple[list[dict], list[tuple[int, in
                 q_keywords=variant["q_keywords"],
                 organization_locations=list(variant["organization_locations"]),
                 person_titles=list(variant.get("person_titles") or PERSON_TITLES),
-                email_status=list(variant.get("email_status") or ["verified"]),
+                email_status=["verified"],
+                industry=(variant.get("industry") or "").strip() or None,
                 per_page=PER_PAGE,
             )
         except Exception as e:
-            print(
-                f"  WARN page {page} failed: {e}",
-                flush=True,
-            )
+            _log(f"  WARN page {page} failed: {e}", level=logging.WARNING)
             page_counts.append((page, 0))
             break
 
@@ -252,7 +295,6 @@ def _search_variant_pages(variant: dict) -> tuple[list[dict], list[tuple[int, in
             all_people.append(p)
 
         if len(batch) < PER_PAGE:
-            # Last page of results
             break
         time.sleep(0.35)
 
@@ -263,7 +305,6 @@ def _format_page_summary(page_counts: list[tuple[int, int]]) -> str:
     if not page_counts:
         return "0 hits"
     counts = list(page_counts)
-    # Drop trailing empty page used only as stop signal
     if len(counts) > 1 and counts[-1][1] == 0:
         counts = counts[:-1]
     parts = [f"page {p}={n}" for p, n in counts]
@@ -271,205 +312,86 @@ def _format_page_summary(page_counts: list[tuple[int, int]]) -> str:
     return f"{', '.join(parts)} → {total} hits"
 
 
-def _org_domain(name: str) -> str:
-    """Resolve company website via organizations/search."""
-    if not name:
-        return ""
-    r = requests.post(
-        f"{APOLLO_BASE}/organizations/search",
-        headers=_headers(),
-        json={"q_organization_name": name, "per_page": 1},
-        timeout=30,
-    )
-    if r.status_code != 200:
-        return ""
-    orgs = r.json().get("organizations") or []
-    if not orgs:
-        return ""
-    return (orgs[0].get("primary_domain") or "").strip()
+def _valid_email(value: str) -> bool:
+    return bool(EMAIL_RE.match((value or "").strip()))
 
 
-def _enrich_batch(people: list[dict]) -> list[dict] | None:
-    """Reveal emails via bulk_match. Returns None if key lacks scope (403)."""
-    details = [{"id": p["id"]} for p in people if p.get("id")]
-    if not details:
-        return []
-
-    def _post() -> requests.Response:
-        return requests.post(
-            f"{APOLLO_BASE}/people/bulk_match",
-            headers=_headers(),
-            params={"reveal_personal_emails": "false", "reveal_phone_number": "false"},
-            json={"details": details},
-            timeout=60,
-        )
-
-    try:
-        r = _post()
-        if r.status_code == 403:
-            return None
-        r.raise_for_status()
-        data = r.json()
-        matches = data.get("matches") or []
-        return [m for m in matches if m]
-    except requests.exceptions.HTTPError as e:
-        status = e.response.status_code if e.response is not None else 0
-        if status == 422:
-            logger.warning(
-                "Apollo bulk_match returned 422 for batch of %s people, "
-                "skipping this batch",
-                len(people),
-            )
-            print(
-                f"WARN: Apollo bulk_match returned 422 for batch of "
-                f"{len(people)} people, skipping this batch",
-                flush=True,
-            )
-            return []
-        if status == 429:
-            logger.warning(
-                "Apollo rate limit hit, sleeping 60s and retrying once"
-            )
-            print(
-                "WARN: Apollo rate limit hit, sleeping 60s and retrying once",
-                flush=True,
-            )
-            time.sleep(60)
-            try:
-                r2 = _post()
-                if r2.status_code == 403:
-                    return None
-                r2.raise_for_status()
-                matches = r2.json().get("matches") or []
-                return [m for m in matches if m]
-            except Exception as retry_err:
-                logger.warning(
-                    "bulk_match failed after 429 retry: %s, skipping batch",
-                    retry_err,
-                )
-                print(
-                    f"WARN: bulk_match failed after 429 retry: {retry_err}, "
-                    "skipping batch",
-                    flush=True,
-                )
-                return []
-        if status >= 500:
-            logger.warning(
-                "Apollo server error %s, skipping batch",
-                status,
-            )
-            print(
-                f"WARN: Apollo server error {status}, skipping batch",
-                flush=True,
-            )
-            return []
-        raise
-    except Exception as e:
-        logger.warning("bulk_match failed: %s, skipping batch", e)
-        print(f"WARN: bulk_match failed: {e}, skipping batch", flush=True)
-        return []
+def _person_email(p: dict) -> str:
+    for key in ("email", "work_email", "primary_email"):
+        val = (p.get(key) or "").strip()
+        if val and not val.lower().endswith("email_not_unlocked.com"):
+            return val
+    contact = p.get("contact") if isinstance(p.get("contact"), dict) else {}
+    for key in ("email", "work_email"):
+        val = (contact.get(key) or "").strip()
+        if val and not val.lower().endswith("email_not_unlocked.com"):
+            return val
+    return ""
 
 
-def _person_enrichable(p: dict) -> bool:
-    """True if person has enough fields for a safe bulk_match attempt."""
-    if not p.get("id"):
-        return False
-    first = (p.get("first_name") or "").strip()
-    last = (p.get("last_name") or p.get("last_name_obfuscated") or "").strip()
-    if not first and not last:
-        return False
-    email = (p.get("email") or "").strip()
-    linkedin = str(p.get("linkedin_url") or p.get("linkedin") or "").strip()
-    # Apollo api_search often omits cleartext email/linkedin but sets has_email;
-    # bulk_match can still reveal via id in that case.
-    has_email_flag = bool(p.get("has_email"))
-    if not email and not linkedin and not has_email_flag:
-        return False
-    return True
+def _person_linkedin(p: dict) -> str:
+    return str(p.get("linkedin_url") or p.get("linkedin") or "").strip()
 
 
-def _attach_domains(people: list[dict]) -> list[dict]:
-    """Fill organization.primary_domain when missing (search omits it)."""
-    cache: dict[str, str] = {}
-    for p in people:
-        org = p.setdefault("organization", {}) or {}
-        p["organization"] = org
-        if org.get("primary_domain"):
-            continue
-        name = (org.get("name") or "").strip()
-        if name not in cache:
-            cache[name] = _org_domain(name)
-        org["primary_domain"] = cache[name]
-    return people
-
-
-def _normalize_search_person(p: dict) -> dict:
-    """Shape api_search person into our common person dict (email may be empty)."""
+def _org_from_raw(p: dict) -> dict:
     org = p.get("organization") or {}
-    last = p.get("last_name") or ""
-    if not last and p.get("last_name_obfuscated"):
-        last = p["last_name_obfuscated"]
+    if not isinstance(org, dict):
+        org = {}
+    name = (org.get("name") or p.get("organization_name") or "").strip()
+    domain = (
+        org.get("primary_domain")
+        or org.get("website_url")
+        or p.get("organization_primary_domain")
+        or ""
+    )
+    domain = str(domain).strip()
+    if "://" in domain:
+        domain = domain.split("://", 1)[1].split("/", 1)[0]
     return {
-        "id": p.get("id"),
-        "first_name": p.get("first_name", ""),
-        "last_name": last,
-        "email": p.get("email") or "",
-        "title": p.get("title", ""),
-        "verified_email": bool(
-            p.get("email_status") == "verified" or p.get("verified_email")
-        ),
-        "has_email": p.get("has_email"),
-        "organization": {
-            "name": org.get("name", ""),
-            "primary_domain": org.get("primary_domain", ""),
-        },
+        "name": name,
+        "primary_domain": domain,
+        "id": org.get("id") or p.get("organization_id"),
     }
 
 
-def _enrich_people(found: list[dict]) -> list[dict]:
-    """Try email enrichment (domains filled later for NEW leads only)."""
-    if not found:
-        return []
+def _convert_search_hits(found: list[dict]) -> list[dict]:
+    """Convert search hits → person dicts. Skip anyone without cleartext email.
 
-    enrichable: list[dict] = []
-    skipped = 0
+    NEVER calls enrichment APIs.
+    """
+    people: list[dict] = []
     for p in found:
-        if _person_enrichable(p):
-            enrichable.append(p)
-        else:
-            skipped += 1
-    if skipped:
-        msg = f"Skipped {skipped} people with insufficient data for enrichment"
-        logger.warning(msg)
-        print(msg, flush=True)
+        email = _person_email(p)
+        if not email or not _valid_email(email):
+            _log("skipped: no email in search response", level=logging.WARNING)
+            continue
 
-    if not enrichable:
-        return [_normalize_search_person(p) for p in found]
+        org = _org_from_raw(p)
+        last = (p.get("last_name") or "").strip()
+        if not last and p.get("last_name_obfuscated"):
+            last = str(p.get("last_name_obfuscated") or "").strip()
 
-    enriched = _enrich_batch(enrichable[:10])
-    if enriched is None:
-        print(
-            "WARN: Apollo API key cannot access people/bulk_match (emails).\n"
-            "      Returning search hits without emails."
+        people.append(
+            {
+                "id": p.get("id"),
+                "first_name": p.get("first_name") or "",
+                "last_name": last,
+                "email": email,
+                "title": p.get("title") or "",
+                "linkedin_url": _person_linkedin(p),
+                "city": p.get("city") or "",
+                "state": p.get("state") or "",
+                "country": p.get("country") or "",
+                "verified_email": True,
+                "has_email": True,
+                "enriched": ENRICHED_SEARCH,
+                "organization": org,
+            }
         )
-        return [_normalize_search_person(p) for p in found]
-
-    people = list(enriched)
-    for i in range(10, len(enrichable), 10):
-        batch = _enrich_batch(enrichable[i : i + 10]) or []
-        people.extend(batch)
-        time.sleep(0.2)
-    for p in people:
-        status = (p.get("email_status") or "").lower()
-        p["verified_email"] = status == "verified" or bool(p.get("verified_email"))
-        # Ensure organization dict exists
-        if not isinstance(p.get("organization"), dict):
-            p["organization"] = p.get("organization") or {}
     return people
 
 
 def _normalize_headers(fieldnames: list[str]) -> dict[str, str]:
-    """Map raw CSV headers → canonical keys."""
     mapping = {}
     for h in fieldnames or []:
         key = HEADER_MAP.get(h.strip().lower())
@@ -479,7 +401,6 @@ def _normalize_headers(fieldnames: list[str]) -> dict[str, str]:
 
 
 def _row_to_person(row: dict, header_map: dict[str, str]) -> dict:
-    """Convert a CSV row into Apollo-like person dict."""
     data = {header_map[k]: (v or "").strip() for k, v in row.items() if k in header_map}
     return {
         "first_name": data.get("first_name", ""),
@@ -487,6 +408,7 @@ def _row_to_person(row: dict, header_map: dict[str, str]) -> dict:
         "email": data.get("email", ""),
         "title": data.get("title", ""),
         "verified_email": True,
+        "enriched": ENRICHED_SEARCH,
         "organization": {
             "name": data.get("organization_name", ""),
             "primary_domain": data.get("organization_primary_domain", ""),
@@ -495,7 +417,6 @@ def _row_to_person(row: dict, header_map: dict[str, str]) -> dict:
 
 
 def _from_csv() -> list[dict]:
-    """Load people from data/leads.csv (Apollo export or example shape)."""
     if not CSV_PATH.exists():
         raise FileNotFoundError(
             f"No APOLLO_KEY and CSV not found at {CSV_PATH}. "
@@ -518,15 +439,11 @@ def _filter_new_leads(
     run_emails: set[str],
     require_email: bool,
 ) -> tuple[list[dict], int]:
-    """Keep only leads not already in sheet / last_seen_ids / this run.
-
-    Returns (new_people, duplicates_skipped).
-    """
     new_people: list[dict] = []
     dupes = 0
     for p in people:
         pid = str(p.get("id") or "").strip()
-        email = (p.get("email") or "").strip().lower()
+        email = (_person_email(p) or "").strip().lower()
 
         if pid and pid in seen_ids:
             dupes += 1
@@ -558,30 +475,22 @@ def _run_one_variant(
     run_emails: set[str],
     require_email: bool,
 ) -> tuple[list[dict], int, int]:
-    """Search+enrich one variant. Returns (new_people, hits, dupes_in_variant)."""
+    """Search only (no enrichment). Returns (new_people, hits, dupes)."""
     label = _variant_label(variant)
+    keyword = (variant.get("q_keywords") or label or "?").strip()
     found, page_counts = _search_variant_pages(variant)
     hits = len(found)
-    pages_txt = _format_page_summary(page_counts)
-    print(f"Variant {index} ({label}): {pages_txt}", flush=True)
+    _log(f"Variant {index} ({label}): {_format_page_summary(page_counts)}")
+    _log(f"Variant '{keyword}': found {hits} raw people")
 
     if not found:
         return [], 0, 0
 
-    keyword = (variant.get("q_keywords") or label or "?").strip()
-    try:
-        people = _enrich_people(found)
-    except Exception as e:
-        logger.error(
-            "Variant '%s' enrichment failed: %s, continuing",
-            keyword,
-            e,
-        )
-        print(
-            f"ERROR: Variant '{keyword}' enrichment failed: {e}, continuing",
-            flush=True,
-        )
-        people = []
+    people = _convert_search_hits(found)
+    skipped_no_email = hits - len(people)
+    _log(f"  - with verified email in search: {len(people)}")
+    _log(f"  - skipped (no email in search response): {skipped_no_email}")
+    _log("  - enrichment calls: 0 (disabled)")
 
     new_people, dupes = _filter_new_leads(
         people,
@@ -590,26 +499,32 @@ def _run_one_variant(
         run_emails=run_emails,
         require_email=require_email,
     )
-    if new_people:
-        _attach_domains(new_people)
+    _log(f"  - new after dedup: {len(new_people)}")
     return new_people, hits, dupes
 
 
-def find_agencies(page: int = 1, require_email: bool = True) -> list[dict]:
-    """Return NEW people from Apollo (broad US multi-search) or CSV.
+def find_agencies(
+    page: int = 1,
+    require_email: bool = True,
+    *,
+    limit: int | None = None,
+) -> list[dict]:
+    """Return NEW people from Apollo search (credit-safe) or CSV.
 
-    - 5 US variants, up to 3 pages × 100 each
-    - optional intl variant if US total hits < 20
-    - dedupe by email (+ Apollo id / sheet)
-    - persist research_state.json run summary
+    Never calls bulk_match / people/enrich — those spend email credits.
     """
-    _ = page  # pagination is internal (pages 1–3 per variant)
+    _ = page
     apollo_key = os.environ.get("APOLLO_KEY", "").strip()
     if not apollo_key:
         people = _from_csv()
         if require_email:
             people = [p for p in people if (p.get("email") or "").strip()]
-        return people
+        cap = NEW_LEADS_CAP if limit is None else min(NEW_LEADS_CAP, max(1, int(limit)))
+        return people[:cap]
+
+    _log(
+        "Credit-safe mode: search with verified filter only, enrichment disabled"
+    )
 
     state = _load_state()
     sheet_emails = _existing_sheet_emails()
@@ -617,18 +532,23 @@ def find_agencies(page: int = 1, require_email: bool = True) -> list[dict]:
     run_emails: set[str] = set()
 
     variants = get_daily_search_variants()
-    print(
-        f"Daily broad US search: {len(variants)} variants "
-        f"(per_page={PER_PAGE}, max_pages={MAX_PAGES})",
-        flush=True,
+    cap = NEW_LEADS_CAP if limit is None else min(NEW_LEADS_CAP, max(1, int(limit)))
+    _log(
+        f"Daily rotating US search: {len(variants)} variants "
+        f"(of {len(VARIANTS)}; per_page={PER_PAGE}, max_pages={MAX_PAGES}, "
+        f"cap={cap})"
     )
 
     all_new: list[dict] = []
     total_hits = 0
     total_dupes = 0
     us_hits = 0
+    variants_attempted = 0
 
     for i, variant in enumerate(variants, start=1):
+        if len(all_new) >= cap:
+            _log(f"Daily cap reached ({cap}), stopping")
+            break
         new_people, hits, dupes = _run_one_variant(
             i,
             variant,
@@ -637,19 +557,23 @@ def find_agencies(page: int = 1, require_email: bool = True) -> list[dict]:
             run_emails=run_emails,
             require_email=require_email,
         )
+        variants_attempted += 1
         us_hits += hits
         total_hits += hits
         total_dupes += dupes
-        all_new.extend(new_people)
+        room = cap - len(all_new)
+        all_new.extend(new_people[:room])
+        if len(all_new) >= cap:
+            _log(f"Daily cap reached ({cap}), stopping")
+            break
         time.sleep(0.35)
 
-    variants_run = len(variants)
-    if us_hits < US_MIN_HITS_BEFORE_INTL:
+    variants_run = variants_attempted
+    if len(all_new) < cap and us_hits < US_MIN_HITS_BEFORE_INTL:
         intl = get_international_variant()
         variants_run += 1
-        print(
-            f"US hits={us_hits} < {US_MIN_HITS_BEFORE_INTL} → running international variant",
-            flush=True,
+        _log(
+            f"US hits={us_hits} < {US_MIN_HITS_BEFORE_INTL} → running international variant"
         )
         new_people, hits, dupes = _run_one_variant(
             variants_run,
@@ -661,35 +585,31 @@ def find_agencies(page: int = 1, require_email: bool = True) -> list[dict]:
         )
         total_hits += hits
         total_dupes += dupes
-        all_new.extend(new_people)
+        room = cap - len(all_new)
+        all_new.extend(new_people[:room])
 
-    # Cross-check: final email dedup (safety)
     final: list[dict] = []
     seen_final: set[str] = set()
     for p in all_new:
-        email = (p.get("email") or "").strip().lower()
+        email = (_person_email(p) or "").strip().lower()
         key = email or str(p.get("id") or "")
         if not key or key in seen_final:
             if key in seen_final:
                 total_dupes += 1
             continue
         seen_final.add(key)
+        # Guarantee Enriched marker
+        p["enriched"] = ENRICHED_SEARCH
         final.append(p)
 
-    # Cap daily additions so the sheet stays manageable; overflow stays
-    # eligible for later runs (drop their ids from last_seen_ids).
-    if len(final) > NEW_LEADS_CAP:
-        overflow = final[NEW_LEADS_CAP:]
-        final = final[:NEW_LEADS_CAP]
+    if len(final) > cap:
+        overflow = final[cap:]
+        final = final[:cap]
         for p in overflow:
             pid = str(p.get("id") or "").strip()
             if pid:
                 seen_ids.discard(pid)
-        print(
-            f"Capped NEW leads to {NEW_LEADS_CAP} "
-            f"(held back {len(overflow)} for later runs)",
-            flush=True,
-        )
+        _log(f"Capped NEW leads to {cap} (held back {len(overflow)} for later runs)")
 
     _save_run_state(
         variants_run=variants_run,
@@ -699,5 +619,9 @@ def find_agencies(page: int = 1, require_email: bool = True) -> list[dict]:
         last_seen_ids=list(seen_ids),
     )
 
-    print(f"TOTAL NEW AFTER DEDUP: {len(final)}", flush=True)
+    _log(f"TOTAL NEW AFTER DEDUP: {len(final)}")
+    _log(
+        f"All {len(final)} leads have verified email from search "
+        f"(0 credits spent)"
+    )
     return final

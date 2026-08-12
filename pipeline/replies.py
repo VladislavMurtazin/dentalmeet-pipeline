@@ -184,7 +184,7 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
     for i, raw in enumerate(values):
         if i == 0:
             continue
-        row = (list(raw) + [""] * 12)[:12]
+        row = (list(raw) + [""] * len(HEADERS))[: len(HEADERS)]
         email_addr = row[COL["Email"] - 1].strip().lower()
         if not is_email(email_addr):
             continue

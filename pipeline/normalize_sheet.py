@@ -182,17 +182,23 @@ def normalize() -> None:
             existing.add(rec["Email"].lower())
             manual_added += 1
 
-    # Rebuild Agencies: clear, resize to 12 cols, write header + rows
-    ws.clear()
-    # Resize: keep enough rows, exactly 12 columns
-    target_rows = max(len(records) + 10, 100)
-    ws.resize(rows=target_rows, cols=12)
+    # Rebuild Agencies: clear, resize, write header + rows
+    from .to_sheets import N_COLS, HEADER_RANGE
 
-    ws.update(range_name="A1:L1", values=[HEADERS], value_input_option="USER_ENTERED")
+    ws.clear()
+    target_rows = max(len(records) + 10, 100)
+    ws.resize(rows=target_rows, cols=N_COLS)
+
+    ws.update(range_name=HEADER_RANGE, values=[HEADERS], value_input_option="USER_ENTERED")
     if records:
         body = [_record_list(r) for r in records]
         end = 1 + len(body)
-        ws.update(range_name=f"A2:L{end}", values=body, value_input_option="USER_ENTERED")
+        end_col = chr(ord("A") + N_COLS - 1)
+        ws.update(
+            range_name=f"A2:{end_col}{end}",
+            values=body,
+            value_input_option="USER_ENTERED",
+        )
 
     print(
         f"normalize done: kept={len(records)} "

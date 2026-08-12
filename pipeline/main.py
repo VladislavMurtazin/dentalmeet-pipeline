@@ -26,12 +26,17 @@ load_dotenv()
 
 from .personalize import parse_signal
 from .research import find_agencies
-from .to_sheets import add_row
+from .to_sheets import HEADERS, add_row
 
 
-def collect_leads(page: int = 1, require_email: bool = True) -> list[dict]:
+def collect_leads(
+    page: int = 1,
+    require_email: bool = True,
+    *,
+    limit: int | None = None,
+) -> list[dict]:
     """Apollo/CSV people — no website scraping (lazy at send time)."""
-    people = find_agencies(page=page, require_email=require_email)
+    people = find_agencies(page=page, require_email=require_email, limit=limit)
     rows = []
     for person in people:
         org = person.get("organization") or {}
@@ -66,33 +71,37 @@ def run_research(args: argparse.Namespace) -> None:
     if args.from_csv:
         os.environ["APOLLO_KEY"] = ""
 
-    rows = collect_leads(page=args.page, require_email=not args.allow_no_email)
-    print(f"found {len(rows)} people", flush=True)
+    limit = getattr(args, "limit", None)
 
+    # --dry-run: print search plan only (no Apollo / Sheets)
     if args.dry_run:
-        preview = []
-        for row in rows:
-            p = row["person"]
-            org = p.get("organization") or {}
-            preview.append(
-                {
-                    "email": p.get("email"),
-                    "first_name": p.get("first_name"),
-                    "last_name": p.get("last_name"),
-                    "title": p.get("title"),
-                    "company": org.get("name"),
-                    "domain": row["domain"],
-                    "verified_email": p.get("verified_email"),
-                    "has_email": p.get("has_email"),
-                    "signal": row["signal"],
-                    "signal_parts": row["signal_parts"],
-                }
-            )
-        print(json.dumps(preview, ensure_ascii=False, indent=2))
+        from .research import print_research_plan
+
+        print_research_plan(limit=limit)
         return
+
+    rows = collect_leads(
+        page=args.page,
+        require_email=not args.allow_no_email,
+        limit=limit,
+    )
+    print(f"found {len(rows)} people", flush=True)
 
     for row in rows:
         row.setdefault("opener", "")
+        p = row["person"]
+        preview = {
+            "email": p.get("email"),
+            "first_name": p.get("first_name"),
+            "last_name": p.get("last_name"),
+            "title": p.get("title"),
+            "company": (p.get("organization") or {}).get("name"),
+            "domain": row["domain"],
+            "verified_email": p.get("verified_email"),
+            "enriched": p.get("enriched"),
+        }
+        print(json.dumps(preview, ensure_ascii=False), flush=True)
+
     push_leads(rows)
 
 
@@ -142,7 +151,7 @@ def run_draft_reply(args: argparse.Namespace) -> None:
         try:
             ws = get_worksheet("Agencies")
             for row in ws.get_all_values()[1:]:
-                row = (row + [""] * 12)[:12]
+                row = (row + [""] * len(HEADERS))[: len(HEADERS)]
                 if row[3].strip().lower() == email:
                     lead_context = {
                         "email": email,
@@ -180,7 +189,7 @@ def main() -> None:
     p_research.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print leads+signals as JSON (no Sheets write)",
+        help="Print today's search plan only (no Apollo API / Sheets writes)",
     )
     p_research.add_argument(
         "--allow-no-email",
@@ -188,6 +197,12 @@ def main() -> None:
         help="Keep Apollo search hits even without revealed emails",
     )
     p_research.add_argument("--page", type=int, default=1)
+    p_research.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Max NEW leads this run (default daily cap 30)",
+    )
     p_research.add_argument(
         "--from-csv",
         action="store_true",
