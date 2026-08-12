@@ -34,9 +34,12 @@ def collect_leads(
     require_email: bool = True,
     *,
     limit: int | None = None,
+    enrich: int | None = None,
 ) -> list[dict]:
     """Apollo/CSV people — no website scraping (lazy at send time)."""
-    people = find_agencies(page=page, require_email=require_email, limit=limit)
+    people = find_agencies(
+        page=page, require_email=require_email, limit=limit, enrich=enrich
+    )
     rows = []
     for person in people:
         org = person.get("organization") or {}
@@ -72,18 +75,20 @@ def run_research(args: argparse.Namespace) -> None:
         os.environ["APOLLO_KEY"] = ""
 
     limit = getattr(args, "limit", None)
+    enrich = getattr(args, "enrich", None)
 
     # --dry-run: print search plan only (no Apollo / Sheets)
     if args.dry_run:
         from .research import print_research_plan
 
-        print_research_plan(limit=limit)
+        print_research_plan(limit=limit, enrich=enrich)
         return
 
     rows = collect_leads(
         page=args.page,
         require_email=not args.allow_no_email,
         limit=limit,
+        enrich=enrich,
     )
     print(f"found {len(rows)} people", flush=True)
 
@@ -99,6 +104,7 @@ def run_research(args: argparse.Namespace) -> None:
             "domain": row["domain"],
             "verified_email": p.get("verified_email"),
             "enriched": p.get("enriched"),
+            "person_id": p.get("person_id") or p.get("id"),
         }
         print(json.dumps(preview, ensure_ascii=False), flush=True)
 
@@ -202,6 +208,14 @@ def main() -> None:
         type=int,
         default=None,
         help="Max NEW leads this run (default daily cap 30)",
+    )
+    p_research.add_argument(
+        "--enrich",
+        type=int,
+        default=None,
+        metavar="N",
+        help="BATCH MODE: enrich up to N new decision-makers (spends credits). "
+        "Default/cron: enrichment OFF.",
     )
     p_research.add_argument(
         "--from-csv",

@@ -24,10 +24,13 @@ HEADERS = [
     "Notes",
     "Approved",
     "Enriched",
+    "PersonID",
+    "LinkedIn",
 ]
 
 N_COLS = len(HEADERS)
-HEADER_RANGE = f"A1:{chr(ord('A') + N_COLS - 1)}1"  # A1:M1
+# A=0 … O=14 for 15 columns
+HEADER_RANGE = f"A1:{chr(ord('A') + N_COLS - 1)}1"
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", re.I)
 
@@ -66,10 +69,11 @@ def _ensure_headers(ws) -> None:
         else:
             current.append(name)
             changed = True
-    # If Enriched exists under another index, keep append-at-end behavior
-    if "Enriched" not in current:
-        current.append("Enriched")
-        changed = True
+    # Ensure Enriched / PersonID / LinkedIn exist
+    for extra in ("Enriched", "PersonID", "LinkedIn"):
+        if extra not in current:
+            current.append(extra)
+            changed = True
     if changed:
         end_col = chr(ord("A") + len(current) - 1)
         ws.update(
@@ -175,8 +179,11 @@ def add_row(person: dict, opener: str = "") -> bool:
     elif str(enriched_raw).upper() == "SEARCH":
         enriched = "SEARCH"
     else:
-        # Default / credit-safe search path
         enriched = "SEARCH"
+    person_id = str(
+        person.get("person_id") or person.get("id") or ""
+    ).strip()
+    linkedin = str(person.get("linkedin_url") or person.get("linkedin") or "").strip()
 
     record = _pad_row(
         [
@@ -193,6 +200,8 @@ def add_row(person: dict, opener: str = "") -> bool:
             domain,
             "",  # Approved
             enriched,
+            person_id,
+            linkedin,
         ]
     )
 
