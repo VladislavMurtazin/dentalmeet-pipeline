@@ -127,34 +127,28 @@ def with_dentalmeet_utm(calendly_url: str) -> str:
     return f"{url}{sep}utm_source=dentalmeet"
 
 
-def build_outreach_email(target: dict, client_info: dict, opener: str = "") -> tuple[str, str]:
-    """Personalized dental-practice outreach from the agency client."""
+def build_outreach_email(
+    target: dict, client_info: dict, opener: str = ""
+) -> tuple[str, str, str]:
+    """Personalized async dental-practice outreach from the agency client."""
+    from pipeline.templates import build_dental_email
+
     first = (target.get("first_name") or "").strip() or "there"
     practice = (target.get("company") or "your practice").strip()
     opener = (opener or target.get("opener") or "").strip()
-    calendly = with_dentalmeet_utm(client_info.get("calendly") or "")
-    agent_name = (client_info.get("name") or "").strip() or "the team"
-    agency = (client_info.get("company") or "").strip() or "our agency"
-    domain = (client_info.get("email") or "").split("@")[-1]
 
-    subject = f"idea for {practice}"
-    opener_block = f"{opener}\n\n" if opener else ""
-    body = (
-        f"Hi {first},\n"
-        f"\n"
-        f"{opener_block}"
-        f"I help dental practices get a steady flow of new patient appointments "
-        f"without adding more work on your front desk.\n"
-        f"\n"
-        f"Worth a quick 15-minute chat to see if it's a fit for {practice}?\n"
-        f"\n"
-        f"{calendly or '[calendly link]'}\n"
-        f"\n"
-        f"— {agent_name}\n"
-        f"{agency}\n"
-        f"{domain}\n"
+    client = dict(client_info)
+    client["calendly"] = with_dentalmeet_utm(client_info.get("calendly") or "")
+
+    return build_dental_email(
+        client,
+        first_name=first,
+        practice=practice,
+        opener=opener,
+        service=(target.get("service") or "").strip(),
+        city=(target.get("city") or "").strip(),
+        competitor=(target.get("competitor") or "").strip(),
     )
-    return subject, body
 
 
 def send_as_client(client_email: str, target: dict, email_content: dict) -> str:
@@ -222,6 +216,7 @@ def _append_sent_log(client_email: str, row: dict) -> None:
             "subject",
             "message_id",
             "wave",
+            "template_id",
         ]
         w = csv.DictWriter(f, fieldnames=fields)
         if write_header:
@@ -252,7 +247,7 @@ def run_campaign(client_email: str, daily_limit: int = 50) -> dict:
         if not email or email in already:
             skipped += 1
             continue
-        subject, body = build_outreach_email(t, client, t.get("opener", ""))
+        subject, body, template_id = build_outreach_email(t, client, t.get("opener", ""))
         try:
             mid = send_as_client(
                 client_email,
@@ -273,6 +268,7 @@ def run_campaign(client_email: str, daily_limit: int = 50) -> dict:
                     "subject": subject,
                     "message_id": mid,
                     "wave": "0",
+                    "template_id": template_id,
                 },
             )
             sent += 1
@@ -290,18 +286,47 @@ def run_campaign(client_email: str, daily_limit: int = 50) -> dict:
 
 
 def send_followup(client_email: str, target: dict, followup_number: int) -> str:
-    from pipeline.templates import FOLLOWUP_1_TEMPLATE, FOLLOWUP_2_TEMPLATE
+    from pipeline.templates import (
+        client_presentation_url,
+        presentation_url,
+    )
 
     client = load_client_info(client_email)
-    first = (target.get("first_name") or "").strip()
+    first = (target.get("first_name") or "").strip() or "there"
     company = (target.get("company") or "").strip()
-    cal = client.get("calendly") or ""
-    if int(followup_number) == 1:
-        subject, body = FOLLOWUP_1_TEMPLATE(first, company, cal)
-    else:
-        subject, body = FOLLOWUP_2_TEMPLATE(first, company, cal)
+    practice = company or "your practice"
+    cal = with_dentalmeet_utm(client.get("calendly") or "")
+    preso = client_presentation_url(client)
+    agent = (client.get("name") or "").strip() or "the team"
+    agency = (client.get("company") or "").strip() or "our agency"
 
-    # Prefer threading if we have prior message id
+    if int(followup_number) == 1:
+        subject = f"quick bump for {practice} (no call needed)"
+        body = (
+            f"Hi {first},\n\n"
+            f"Just bumping this — still curious about more patient consultations?\n\n"
+            f"We work 100% async. Read how it works:\n"
+            f"{preso}\n\n"
+            f"Book a time:\n"
+            f"{cal}\n\n"
+            f"— {agent}\n"
+            f"{agency}"
+        )
+    else:
+        subject = f"closing the loop / {practice}"
+        body = (
+            f"Hi {first},\n\n"
+            f"Last note from me — no pressure either way.\n\n"
+            f"If adding consultations is still on your radar, read the 2-min "
+            f"presentation (no call needed):\n"
+            f"{preso}\n\n"
+            f"Or book a time to start async:\n"
+            f"{cal}\n\n"
+            f"Otherwise I won't follow up again.\n\n"
+            f"— {agent}\n"
+            f"{agency}"
+        )
+    _ = presentation_url  # import keeps parity with agency followups
     mid = send_as_client(
         client_email,
         target,

@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from .email_sender import MAX_PER_RUN, send_batch
-from .templates import CALENDLY_URL, FIRST_EMAIL_TEMPLATE
+from .templates import build_agency_email, print_template_stats
 from .to_sheets import HEADERS, get_worksheet, is_email
 
 # Column letters / 1-based indexes matching HEADERS
@@ -90,6 +90,32 @@ def _opener_from_lead(lead: dict) -> str:
     )
 
 
+def _signal_snippet(lead: dict) -> str:
+    """Short signal for A9 template (default: your recent work)."""
+    from .personalize import parse_signal
+
+    raw = (lead.get("Signal") or "").strip()
+    if not raw:
+        return "your recent work"
+    parts = parse_signal(raw)
+    for key in ("H1", "Page", "Meta"):
+        val = (parts.get(key) or "").strip()
+        if val and len(val) > 8 and "just a moment" not in val.lower():
+            # Keep subject line short
+            words = val.split()
+            return " ".join(words[:6])
+    return "your recent work"
+
+
+def _append_template_note(row_index: int, notes: str, template_id: str) -> None:
+    marker = f"tpl={template_id}"
+    if marker in (notes or ""):
+        return
+    new_notes = f"{(notes or '').rstrip()}; {marker}".strip("; ").strip()
+    ws = get_worksheet("Agencies")
+    ws.update_cell(row_index, COL["Notes"], new_notes)
+
+
 def run_first_touch(limit: int = 5) -> dict:
     """Build and send first-touch emails for up to `limit` unsent leads.
 
@@ -114,11 +140,11 @@ def run_first_touch(limit: int = 5) -> dict:
         company = lead.get("Company", "").strip()
         opener = _opener_from_lead(lead)
         first = _first_name(lead.get("Contact", ""))
-        subject, body = FIRST_EMAIL_TEMPLATE(
+        subject, body, template_id = build_agency_email(
             first_name=first,
             company=company,
             opener=opener,
-            calendly_url=CALENDLY_URL,
+            signal=_signal_snippet(lead),
         )
         recipients.append(
             {
@@ -126,6 +152,8 @@ def run_first_touch(limit: int = 5) -> dict:
                 "subject": subject,
                 "body": body,
                 "row_index": lead["row_index"],
+                "Notes": lead.get("Notes", ""),
+                "template_id": template_id,
             }
         )
 
@@ -140,9 +168,15 @@ def run_first_touch(limit: int = 5) -> dict:
             if row_index:
                 try:
                     mark_sent(row_index, today)
-                    print(f"marked Sent={today} row {row_index}")
+                    tpl = item.get("template_id")
+                    if tpl:
+                        _append_template_note(
+                            row_index, item.get("Notes", ""), tpl
+                        )
+                    print(f"marked Sent={today} row {row_index} ({tpl or 'no tpl'})")
                 except Exception as e:
                     print(f"mark_sent failed row {row_index}: {e}")
 
     print(f"summary: sent {len(result['sent'])}, failed {len(result['failed'])}")
+    print_template_stats()
     return result
