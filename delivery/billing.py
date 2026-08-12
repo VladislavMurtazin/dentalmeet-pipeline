@@ -7,7 +7,7 @@ import json
 import os
 import sys
 from calendar import month_name
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -481,7 +481,7 @@ def send_invoices_for_active_clients(period: str = "month") -> dict:
                 if pay_i is not None and pay_i < len(row)
                 else ""
             )
-            if status in ("completed", "active", "onboarded") and pay != "paid":
+            if status in ("completed", "active", "onboarded", "running") and pay != "paid":
                 if email not in clients:
                     clients.append(email)
     except Exception as e:
@@ -501,6 +501,119 @@ def send_invoices_for_active_clients(period: str = "month") -> dict:
     return {"sent": sent, "skipped": skipped}
 
 
+PILOT_INVOICE_DAYS = 21  # bill each client 3 weeks after Created
+
+
+def _parse_created(raw: str) -> date | None:
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d.%m.%Y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(raw[:10] if fmt.startswith("%Y") else raw, fmt).date()
+        except ValueError:
+            continue
+    try:
+        return date.fromisoformat(raw[:10])
+    except ValueError:
+        return None
+
+
+def clients_due_for_pilot_invoice(days: int = PILOT_INVOICE_DAYS) -> list[dict]:
+    """Clients whose Created date is >= `days` ago and not yet billed/completed."""
+    from pipeline.to_sheets import connect
+
+    gc = connect()
+    sh = gc.open(os.environ.get("SHEET_NAME", "Pilot CRM"))
+    try:
+        ws = sh.worksheet("Clients")
+    except Exception:
+        return []
+
+    values = ws.get_all_values()
+    if not values:
+        return []
+    headers = [h.strip() for h in values[0]]
+    today = date.today()
+    due: list[dict] = []
+
+    for raw in values[1:]:
+        row = {headers[i]: (raw[i] if i < len(raw) else "") for i in range(len(headers))}
+        email = (row.get("Email") or "").strip().lower()
+        if not email:
+            continue
+
+        pilot_done = (row.get("Pilot Completed") or "").strip().lower()
+        if pilot_done in ("yes", "true", "1"):
+            continue
+
+        pay = (row.get("Payment Status") or "").strip().lower()
+        if pay == "paid":
+            continue
+
+        status = (row.get("Status") or "").strip().lower()
+        if status in ("needs_info", "invalid", "cancelled", "awaiting_upfront"):
+            continue
+
+        created = _parse_created(row.get("Created") or "")
+        if created is None:
+            continue
+        age = (today - created).days
+        if age < int(days):
+            continue
+
+        due.append(
+            {
+                "email": email,
+                "created": created.isoformat(),
+                "days_since_start": age,
+                "company": (row.get("Company") or "").strip(),
+                "status": status,
+            }
+        )
+    return due
+
+
+def send_pilot_invoices_due(days: int = PILOT_INVOICE_DAYS) -> dict:
+    """
+    For each client started >= `days` ago: qualify meetings → send invoice →
+    mark pilot completed (via update_client_after_pilot).
+    """
+    from delivery.client_tracker import update_client_after_pilot
+
+    due = clients_due_for_pilot_invoice(days=days)
+    print(f"pilot invoices due ({days}+ days): {len(due)}")
+    sent, skipped = [], []
+
+    for item in due:
+        email = item["email"]
+        try:
+            result = update_client_after_pilot(email)
+            # Tag the invoice in registry for audit
+            inv_no = (result.get("invoice") or {}).get("number")
+            if inv_no:
+                data = _load_registry()
+                for inv in data.get("invoices") or []:
+                    if inv.get("invoice_number") == inv_no:
+                        inv["pilot_invoice"] = True
+                        inv["kind"] = "pilot_3w"
+                        inv["days_since_start"] = item["days_since_start"]
+                        break
+                _save_registry(data)
+
+            sent.append(email)
+            print(
+                f"pilot invoice → {email} "
+                f"(started {item['created']}, day {item['days_since_start']})"
+            )
+        except Exception as e:
+            skipped.append({"email": email, "reason": str(e)})
+            print(f"pilot invoice fail {email}: {e}")
+
+    print(f"pilot invoices sent={len(sent)} skipped={len(skipped)}")
+    return {"sent": sent, "skipped": skipped, "due": due}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="DentalMeet invoicing")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -516,6 +629,12 @@ def main(argv: list[str] | None = None) -> int:
     p_all = sub.add_parser("send_all", help="Email invoices to active clients")
     p_all.add_argument("--period", default="month", choices=["week", "month"])
 
+    p_due = sub.add_parser(
+        "pilot_due",
+        help="Invoice clients whose pilot started N+ days ago (default 21)",
+    )
+    p_due.add_argument("--days", type=int, default=PILOT_INVOICE_DAYS)
+
     # Back-compat: `python -m delivery.billing email --period month`
     args = parser.parse_args(argv)
 
@@ -530,6 +649,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "send_all":
         send_invoices_for_active_clients(period=args.period)
+        return 0
+    if args.cmd == "pilot_due":
+        print(json.dumps(send_pilot_invoices_due(days=args.days), indent=2, default=str))
         return 0
     return 1
 

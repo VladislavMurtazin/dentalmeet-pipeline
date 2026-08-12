@@ -9,6 +9,7 @@
   python -m pipeline.main replies
   python -m pipeline.main replies --days 7
   python -m pipeline.main check_forms
+  python -m pipeline.main launch_pending
   python -m pipeline.main draft_reply EMAIL --body "their question"
   python -m pipeline.main verify_payment TXID [--email client@agency.com]
 """
@@ -119,6 +120,13 @@ def run_check_forms(_args: argparse.Namespace) -> None:
     check_form_responses()
 
 
+def run_launch_pending(_args: argparse.Namespace) -> None:
+    """Research + send practice emails for clients waiting to launch."""
+    from delivery.launch_client import process_pending_launches
+
+    process_pending_launches()
+
+
 def run_draft_reply(args: argparse.Namespace) -> None:
     from .ai_reply_assistant import draft_reply, save_draft
     from .to_sheets import get_worksheet, is_email
@@ -212,7 +220,11 @@ def main() -> None:
 
     sub.add_parser(
         "check_forms",
-        help="Ingest Google Form onboarding responses into Clients",
+        help="Ingest Google Form onboarding responses into Clients + auto-launch",
+    )
+    sub.add_parser(
+        "launch_pending",
+        help="Build dental lists + send for clients with Workspace connected",
     )
 
     p_draft = sub.add_parser("draft_reply", help="Draft an AI reply for a lead question")
@@ -253,6 +265,10 @@ def main() -> None:
 
     if args.command == "check_forms":
         run_check_forms(args)
+        return
+
+    if args.command == "launch_pending":
+        run_launch_pending(args)
         return
 
     if args.command == "draft_reply":

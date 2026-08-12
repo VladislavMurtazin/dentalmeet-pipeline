@@ -187,7 +187,7 @@ def active_clients() -> list[str]:
             if status_i is not None and status_i < len(row)
             else ""
         )
-        if status in ("paid", "active", "onboarded") or not status:
+        if status in ("paid", "active", "onboarded", "running", "awaiting_workspace") or not status:
             out.append(email)
     return out
 

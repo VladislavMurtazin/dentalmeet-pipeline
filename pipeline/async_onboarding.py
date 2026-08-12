@@ -328,13 +328,13 @@ def _continuation_email(name: str, email: str) -> bool:
 
 
 def check_form_responses() -> dict:
-    """Ingest new Google Form rows into Clients + send confirmation."""
+    """Ingest new Google Form rows into Clients + validate + auto-launch delivery."""
     print("=== check form responses ===")
     form_ws = _form_responses_ws()
     values = form_ws.get_all_values()
     if not values:
         print("form sheet empty")
-        return {"processed": 0, "skipped": 0, "errors": 0}
+        return {"processed": 0, "skipped": 0, "errors": 0, "invalid": 0, "launched": 0}
 
     headers = values[0]
     fmap = _header_map(headers)
@@ -346,18 +346,26 @@ def check_form_responses() -> dict:
 
     clients_ws = _get_or_create_clients_ws()
     today = date.today().isoformat()
-    stats = {"processed": 0, "skipped": 0, "errors": 0}
+    stats = {
+        "processed": 0,
+        "skipped": 0,
+        "errors": 0,
+        "invalid": 0,
+        "launched": 0,
+    }
 
     for i, raw in enumerate(values[1:], start=2):
         row = list(raw) + [""] * (max(processed_idx + 1, len(headers)) - len(raw))
         status = _cell(row, processed_idx).lower()
-        if status in ("processed", "yes", "done"):
+        if status in ("processed", "yes", "done", "invalid"):
+            stats["skipped"] += 1
+            continue
+        if status.startswith("invalid"):
             stats["skipped"] += 1
             continue
 
         email = _cell(row, fmap.get("email"))
         if not is_email(email):
-            # Try workspace email as fallback for identity
             email = _cell(row, fmap.get("workspace_email"))
         if not is_email(email):
             print(f"row {i}: no valid email, skip")
@@ -382,10 +390,32 @@ def check_form_responses() -> dict:
             "Created": today,
         }
 
+        # --- validate before creating client ---
+        from delivery.launch_client import (
+            launch_client,
+            send_form_fix_email,
+            validate_brief,
+        )
+
+        check = validate_brief(brief)
+        if not check["ok"]:
+            print(f"row {i}: INVALID {email}: {check['errors']}")
+            try:
+                send_form_fix_email(email, name, check["errors"])
+            except Exception as e:
+                print(f"row {i}: fix email failed: {e}")
+            form_ws.update_cell(
+                i, processed_idx + 1, f"Invalid: {'; '.join(check['errors'])[:180]}"
+            )
+            stats["invalid"] += 1
+            continue
+
+        for w in check.get("warnings") or []:
+            print(f"row {i}: warning: {w}")
+
         try:
             from delivery.client_tracker import create_client_record
 
-            # Ensure Clients sheet exists before tracker writes
             _ = clients_ws
             record = create_client_record(email, company, brief)
             form_ws.update_cell(i, processed_idx + 1, "Processed")
@@ -402,13 +432,41 @@ def check_form_responses() -> dict:
 
             stats["processed"] += 1
             print(f"row {i}: processed {email} ({label})")
+
+            # Auto-launch dental research (+ send if Workspace already connected).
+            # Repeat clients still awaiting upfront payment are skipped.
+            should_launch = True
+            if record.get("continuation"):
+                should_launch = False
+            if record.get("is_repeat") and record.get("status") == "awaiting_upfront":
+                should_launch = False
+                print(f"row {i}: skip launch until upfront paid")
+
+            if should_launch:
+                try:
+                    launch_result = launch_client(
+                        email,
+                        name=name,
+                        send_connect_link=True,
+                    )
+                    if launch_result.get("status") in ("running", "awaiting_workspace"):
+                        stats["launched"] += 1
+                    print(
+                        f"row {i}: launch status={launch_result.get('status')} "
+                        f"targets={launch_result.get('targets')} "
+                        f"sent={launch_result.get('sent')}"
+                    )
+                except Exception as e:
+                    print(f"row {i}: launch error (client still saved): {e}")
+
         except Exception as e:
             stats["errors"] += 1
             print(f"row {i}: error {e}")
 
     print(
-        f"summary: processed={stats['processed']} "
-        f"skipped={stats['skipped']} errors={stats['errors']}"
+        f"summary: processed={stats['processed']} invalid={stats['invalid']} "
+        f"launched={stats['launched']} skipped={stats['skipped']} "
+        f"errors={stats['errors']}"
     )
     print("=== end check forms ===")
     return stats

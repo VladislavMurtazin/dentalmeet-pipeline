@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,22 +19,17 @@ DEFAULT_BRIEF_FORM = (
 )
 
 UNSUBSCRIBE_URL = "https://dentalmeet.agency/unsubscribe"
-UNSUBSCRIBE_FOOTER = (
-    f"To unsubscribe, click here: {UNSUBSCRIBE_URL}\n"
-    'Not interested? Reply "unsubscribe" and we\'ll remove you.\n'
-)
 
 ROOT = Path(__file__).resolve().parent.parent
 ROTATION_PATH = ROOT / "data" / "template_rotation.json"
 STATS_PATH = ROOT / "data" / "template_stats.json"
 
-# Warm / onboarding emails (includes hello@ + unsubscribe footer).
+# Warm / onboarding emails — unsubscribe is injected by email_sender
+# BEFORE this signature (keeps FSL_BULK_SIG happy + plain text).
 SIGNATURE = (
     "— Vladislav\n"
     "Founder, DentalMeet\n"
-    "hello@dentalmeet.agency\n"
-    "\n"
-    f"{UNSUBSCRIBE_FOOTER}"
+    "hello@dentalmeet.agency"
 )
 
 # Cold agency outreach signature — Founder only, no call CTA.
@@ -42,6 +38,78 @@ AGENCY_SIGNATURE = (
     "Founder, DentalMeet\n"
     "dentalmeet.agency"
 )
+
+# Unique closing lines (PYZOR): each send picks one at random
+CLOSING_LINES = [
+    "Hope this finds you well.",
+    "Looking forward to hearing from you.",
+    "Best regards.",
+    "Cheers.",
+    "Talk soon.",
+    "Thanks for reading.",
+    "Appreciate your time.",
+    "Wishing you a great week.",
+    "Sent from my phone.",
+    "Quick note from my side.",
+    "Happy to share more if useful.",
+    "No rush either way.",
+    "Take care.",
+    "All the best.",
+    "Warm regards.",
+    "Thanks again.",
+    "Catch you later.",
+    "Have a good one.",
+    "Rooting for your team.",
+    "Glad to connect when it fits.",
+    "Just sharing in case it helps.",
+    "Keeping this short.",
+    "Open to your thoughts.",
+    "Feel free to ignore if not relevant.",
+    "Here if you need anything.",
+    "Appreciate any reply.",
+    "Standing by if useful.",
+    "Hope the timing is right.",
+    "Sharing this quietly.",
+    "Simple note — no pitch call.",
+    "Thanks for considering.",
+    "Would love your take.",
+    "Anytime works on our side.",
+    "Async on our end.",
+    "No meeting needed.",
+    "Two-minute read only.",
+    "Form takes five minutes.",
+    "Happy Monday.",
+    "Happy Friday.",
+    "Quick bump of value.",
+    "Bookmark if useful later.",
+    "Saving you a click later.",
+    "Sharing the short version.",
+    "Plain text on purpose.",
+    "Keeping formatting light.",
+    "No images, just the offer.",
+    "Written between meetings.",
+    "Drafted between calls.",
+    "One more idea for you.",
+    "That's the gist.",
+]
+
+SUBJECT_SPICE = [
+    "quick",
+    "short",
+    "honest",
+    "simple",
+    "open",
+    "async",
+    "fresh",
+    "direct",
+    "brief",
+    "light",
+    "real",
+    "clear",
+    "timely",
+    "handy",
+    "useful",
+]
 
 AGENCY_DEFAULTS = {
     "first_name": "there",
@@ -479,6 +547,38 @@ def _normalize_opener(opener: str) -> str:
     return (opener or "").strip()
 
 
+def _random_closing() -> str:
+    return random.choice(CLOSING_LINES)
+
+
+def _spice_subject(subject: str) -> str:
+    """Make subject unique per send without changing the core meaning."""
+    subj = (subject or "").strip()
+    if not subj:
+        return subj
+    word = random.choice(SUBJECT_SPICE)
+    # ~50/50 prefix vs light suffix so fingerprints diverge
+    if random.random() < 0.5:
+        return f"{word}: {subj}"
+    if "(" in subj:
+        return subj
+    return f"{subj} — {word}"
+
+
+def _with_unique_closing(body: str) -> str:
+    """Append a random human closing line above the signature (PYZOR)."""
+    text = (body or "").rstrip()
+    closing = _random_closing()
+    # Insert above last em-dash signature if present
+    m = list(re.finditer(r"(?m)^[—\-]\s+\S", text))
+    if m:
+        idx = m[-1].start()
+        before = text[:idx].rstrip()
+        after = text[idx:]
+        return f"{before}\n\n{closing}\n\n{after}"
+    return f"{text}\n\n{closing}\n"
+
+
 def render_agency_template(template: dict, **kwargs) -> tuple[str, str]:
     """Render one agency template. Returns (subject, body)."""
     tpl_id = template.get("id", "A?")
@@ -496,10 +596,10 @@ def render_agency_template(template: dict, **kwargs) -> tuple[str, str]:
     )
     values["calendly_url"] = values.get("calendly_url") or CALENDLY_URL
 
-    subject = _safe_format(template["subject"], values)
+    subject = _spice_subject(_safe_format(template["subject"], values))
     body = _safe_format(template["body"], values)
-    # Clean double blank lines when opener empty
     body = re.sub(r"\n{3,}", "\n\n", body)
+    body = _with_unique_closing(body)
     return subject, body
 
 
@@ -521,9 +621,10 @@ def render_dental_template(template: dict, **kwargs) -> tuple[str, str]:
     )
     values["calendly_url"] = values.get("calendly_url") or ""
 
-    subject = _safe_format(template["subject"], values)
+    subject = _spice_subject(_safe_format(template["subject"], values))
     body = _safe_format(template["body"], values)
     body = re.sub(r"\n{3,}", "\n\n", body)
+    body = _with_unique_closing(body)
     return subject, body
 
 
@@ -755,12 +856,13 @@ def FOLLOWUP_1_TEMPLATE(
     calendly_url: str = CALENDLY_URL,
 ) -> tuple[str, str]:
     """Async bump ~3 days later."""
+    _ = calendly_url
     name = (first_name or "").strip() or "there"
     company_name = (company or "").strip()
     about = f" for {company_name}" if company_name else ""
     preso = presentation_url()
     form = form_url()
-    subject = f"quick bump{about} (no call needed)"
+    subject = _spice_subject(f"quick bump{about} (no call needed)")
     body = (
         f"Hi {name},\n\n"
         f"Just bumping this — still curious about qualified meetings with "
@@ -771,7 +873,7 @@ def FOLLOWUP_1_TEMPLATE(
         f"{form}\n\n"
         f"{SIGNATURE}"
     )
-    return subject, body
+    return subject, _with_unique_closing(body)
 
 
 def FOLLOWUP_2_TEMPLATE(
@@ -780,12 +882,13 @@ def FOLLOWUP_2_TEMPLATE(
     calendly_url: str = CALENDLY_URL,
 ) -> tuple[str, str]:
     """Final async note ~7 days later."""
+    _ = calendly_url
     name = (first_name or "").strip() or "there"
     company_name = (company or "").strip()
     about = f" / {company_name}" if company_name else ""
     preso = presentation_url()
     form = form_url()
-    subject = f"closing the loop{about}"
+    subject = _spice_subject(f"closing the loop{about}")
     body = (
         f"Hi {name},\n\n"
         f"Last note from me — no pressure either way.\n\n"
@@ -797,7 +900,7 @@ def FOLLOWUP_2_TEMPLATE(
         f"Otherwise I'll assume the timing isn't right and won't follow up again.\n\n"
         f"{SIGNATURE}"
     )
-    return subject, body
+    return subject, _with_unique_closing(body)
 
 
 def validate_template_word_counts(max_words: int = 130) -> list[str]:
