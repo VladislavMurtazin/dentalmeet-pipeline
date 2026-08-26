@@ -380,10 +380,10 @@ def _load_sheet_dedup_index() -> dict:
         "email_rows": {},
     }
     try:
-        from .to_sheets import HEADERS, get_worksheet
+        from .to_sheets import HEADERS, get_all_values_safe, get_worksheet_safe
 
-        ws = get_worksheet()
-        values = ws.get_all_values()
+        ws = get_worksheet_safe()
+        values = get_all_values_safe(ws)
         if not values:
             return index
         header = [(h or "").strip() for h in values[0]]

@@ -11,6 +11,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from pipeline.to_sheets import (
+    get_all_values_safe,
+    open_sheet_safe,
+    open_worksheet_safe,
+    row_values_safe,
+    sheets_update_safe,
+    update_cell_safe,
+)
+
 PILOT_MODEL_LABEL = "Pilot ($0 upfront, $150/meeting, max $750)"
 REPEAT_MODEL_LABEL = "Repeat ($300 upfront + $150/meeting)"
 REPEAT_FLAT_LABEL = "Repeat ($1000 flat for 7 meetings)"
@@ -61,19 +70,17 @@ TRACKER_HEADERS = [
 
 
 def _clients_ws():
-    from pipeline.to_sheets import connect
     import gspread
 
-    gc = connect()
-    sh = gc.open(os.environ.get("SHEET_NAME", "Pilot CRM"))
+    sh = open_sheet_safe(os.environ.get("SHEET_NAME", "Pilot CRM"))
     try:
-        return sh.worksheet("Clients")
+        return open_worksheet_safe(sh, "Clients")
     except gspread.WorksheetNotFound as e:
         raise RuntimeError("Clients worksheet missing — run check_forms first") from e
 
 
 def _headers(ws) -> list[str]:
-    return [h.strip() for h in (ws.row_values(1) or [])]
+    return [h.strip() for h in (row_values_safe(ws, 1) or [])]
 
 
 def ensure_tracker_columns(ws=None) -> dict[str, int]:
@@ -86,7 +93,8 @@ def ensure_tracker_columns(ws=None) -> dict[str, int]:
             headers.append(name)
             changed = True
     if changed:
-        ws.update(
+        sheets_update_safe(
+            ws,
             range_name=f"A1:{_col_letter(len(headers))}1",
             values=[headers],
             value_input_option="USER_ENTERED",
@@ -140,7 +148,7 @@ def check_if_repeat(client_email: str, company_name: str = "") -> dict:
     """
     ws = _clients_ws()
     cols = ensure_tracker_columns(ws)
-    values = ws.get_all_values()
+    values = get_all_values_safe(ws)
     if not values:
         return {
             "is_repeat": False,
@@ -266,7 +274,7 @@ def create_client_record(
         status = "active"
 
     # Count prior engagements for LTV columns
-    values = ws.get_all_values()
+    values = get_all_values_safe(ws)
     prior_hits = _find_matches(values, cols, email, company)
     num_engagements = engagement
 
@@ -306,7 +314,8 @@ def create_client_record(
     # Build row aligned to current headers
     row_vals = [record_map.get(h, "") for h in headers]
     next_row = len(values) + 1
-    ws.update(
+    sheets_update_safe(
+        ws,
         range_name=f"A{next_row}:{_col_letter(len(headers))}{next_row}",
         values=[row_vals],
         value_input_option="USER_ENTERED",
@@ -363,7 +372,7 @@ def get_client_payment_model(client_email: str) -> dict:
     """Return {upfront, per_meeting, max, label, client_type} for a client."""
     ws = _clients_ws()
     cols = ensure_tracker_columns(ws)
-    values = ws.get_all_values()
+    values = get_all_values_safe(ws)
     hits = _find_matches(values, cols, client_email, "")
     if not hits:
         return {**PILOT_PAYMENT, "client_type": "Pilot"}
@@ -386,7 +395,7 @@ def update_client_after_pilot(client_email: str) -> dict:
 
     ws = _clients_ws()
     cols = ensure_tracker_columns(ws)
-    values = ws.get_all_values()
+    values = get_all_values_safe(ws)
     hits = _find_matches(values, cols, client_email, "")
     if not hits:
         raise RuntimeError(f"Client not found: {client_email}")
@@ -425,7 +434,7 @@ def update_client_after_pilot(client_email: str) -> dict:
     cols = ensure_tracker_columns(ws)
     for key, val in updates.items():
         if key in cols:
-            ws.update_cell(row_index, cols[key], val)
+            update_cell_safe(ws, row_index, cols[key], val)
 
     print(f"pilot completed: {client_email} billed=${total_billed} meetings={qualified}")
     return {
@@ -449,7 +458,7 @@ def send_pilot_followup_reminder(client_email: str) -> bool:
 
     ws = _clients_ws()
     cols = ensure_tracker_columns(ws)
-    values = ws.get_all_values()
+    values = get_all_values_safe(ws)
     hits = _find_matches(values, cols, client_email, "")
     if not hits:
         return False
@@ -478,7 +487,7 @@ def remind_completed_pilots(days: int = 7) -> dict:
     """Send continue reminders for pilots completed exactly ~N days ago."""
     ws = _clients_ws()
     cols = ensure_tracker_columns(ws)
-    values = ws.get_all_values()
+    values = get_all_values_safe(ws)
     target = (date.today() - timedelta(days=days)).isoformat()
     sent = []
     for i, row in enumerate(values[1:], start=2):
@@ -497,7 +506,7 @@ def remind_completed_pilots(days: int = 7) -> dict:
             sent.append(email)
             if "Notes" in cols:
                 marker = (notes + "; " if notes else "") + "pilot_continue_reminder_sent"
-                ws.update_cell(i, cols["Notes"], marker)
+                update_cell_safe(ws, i, cols["Notes"], marker)
     print(f"pilot continue reminders: {len(sent)}")
     return {"sent": sent}
 

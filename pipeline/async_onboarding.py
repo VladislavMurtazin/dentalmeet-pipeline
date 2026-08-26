@@ -11,7 +11,16 @@ load_dotenv()
 
 from .email_sender import send_email
 from .templates import SIGNATURE
-from .to_sheets import connect, is_email
+from .to_sheets import (
+    get_all_values_safe,
+    is_email,
+    open_sheet_safe,
+    open_worksheet_safe,
+    retry_sheets_call,
+    row_values_safe,
+    sheets_update_safe,
+    update_cell_safe,
+)
 
 DEFAULT_PRESENTATION = "https://canva.link/n4hed1htcuepmq5"
 DEFAULT_BRIEF_FORM = (
@@ -195,25 +204,26 @@ def _cell(row: list[str], idx: int | None) -> str:
 def _get_or_create_clients_ws():
     import gspread
 
-    gc = connect()
     sheet_name = os.environ.get("SHEET_NAME", "Pilot CRM")
-    sh = gc.open(sheet_name)
+    sh = open_sheet_safe(sheet_name)
     try:
-        ws = sh.worksheet("Clients")
+        ws = open_worksheet_safe(sh, "Clients")
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(
-            title="Clients", rows=1000, cols=len(CLIENTS_HEADERS)
+        ws = retry_sheets_call(
+            sh.add_worksheet, title="Clients", rows=1000, cols=len(CLIENTS_HEADERS)
         )
-        ws.update(
+        sheets_update_safe(
+            ws,
             range_name=_clients_range(1),
             values=[CLIENTS_HEADERS],
             value_input_option="USER_ENTERED",
         )
         return ws
 
-    values = ws.get_all_values()
+    values = get_all_values_safe(ws)
     if not values:
-        ws.update(
+        sheets_update_safe(
+            ws,
             range_name=_clients_range(1),
             values=[CLIENTS_HEADERS],
             value_input_option="USER_ENTERED",
@@ -223,20 +233,19 @@ def _get_or_create_clients_ws():
 
 def _form_responses_ws():
     """Open the Google Form responses spreadsheet/worksheet."""
-    gc = connect()
     sheet_name = os.environ.get(
         "FORM_RESPONSES_SPREADSHEET",
         "DentalMeet Pilot Onboarding (Responses)",
     ).strip()
     ws_name = os.environ.get("FORM_RESPONSES_WORKSHEET", "Form Responses 1").strip()
     try:
-        sh = gc.open(sheet_name)
+        sh = open_sheet_safe(sheet_name)
     except Exception as e:
         # Fallback: look inside Pilot CRM for a responses tab
         pilot = os.environ.get("SHEET_NAME", "Pilot CRM")
         try:
-            sh = gc.open(pilot)
-            ws = sh.worksheet(ws_name)
+            sh = open_sheet_safe(pilot)
+            ws = open_worksheet_safe(sh, ws_name)
             return ws
         except Exception:
             raise RuntimeError(
@@ -244,10 +253,10 @@ def _form_responses_ws():
                 f"Share it with the service account, or set FORM_RESPONSES_SPREADSHEET."
             ) from e
     try:
-        return sh.worksheet(ws_name)
+        return open_worksheet_safe(sh, ws_name)
     except Exception:
         # First worksheet is usually the responses
-        return sh.get_worksheet(0)
+        return retry_sheets_call(sh.get_worksheet, 0)
 
 
 def _ensure_processed_col(ws, headers: list[str]) -> int:
@@ -256,7 +265,7 @@ def _ensure_processed_col(ws, headers: list[str]) -> int:
         if _normalize_header(h) == "processed":
             return i
     col = len(headers) + 1  # 1-based for gspread
-    ws.update_cell(1, col, "Processed")
+    update_cell_safe(ws, 1, col, "Processed")
     return col - 1
 
 
@@ -331,7 +340,7 @@ def check_form_responses() -> dict:
     """Ingest new Google Form rows into Clients + validate + auto-launch delivery."""
     print("=== check form responses ===")
     form_ws = _form_responses_ws()
-    values = form_ws.get_all_values()
+    values = get_all_values_safe(form_ws)
     if not values:
         print("form sheet empty")
         return {"processed": 0, "skipped": 0, "errors": 0, "invalid": 0, "launched": 0}
@@ -341,7 +350,7 @@ def check_form_responses() -> dict:
     processed_idx = _ensure_processed_col(form_ws, headers)
     # Re-read headers if we just added Processed
     if processed_idx >= len(headers):
-        headers = form_ws.row_values(1)
+        headers = row_values_safe(form_ws, 1)
         processed_idx = _ensure_processed_col(form_ws, headers)
 
     clients_ws = _get_or_create_clients_ws()
@@ -404,8 +413,11 @@ def check_form_responses() -> dict:
                 send_form_fix_email(email, name, check["errors"])
             except Exception as e:
                 print(f"row {i}: fix email failed: {e}")
-            form_ws.update_cell(
-                i, processed_idx + 1, f"Invalid: {'; '.join(check['errors'])[:180]}"
+            update_cell_safe(
+                form_ws,
+                i,
+                processed_idx + 1,
+                f"Invalid: {'; '.join(check['errors'])[:180]}",
             )
             stats["invalid"] += 1
             continue
@@ -418,7 +430,7 @@ def check_form_responses() -> dict:
 
             _ = clients_ws
             record = create_client_record(email, company, brief)
-            form_ws.update_cell(i, processed_idx + 1, "Processed")
+            update_cell_safe(form_ws, i, processed_idx + 1, "Processed")
 
             if record.get("continuation"):
                 _continuation_email(name, email)

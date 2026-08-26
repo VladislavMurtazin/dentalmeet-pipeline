@@ -245,12 +245,11 @@ def generate_invoice_pdf(
     # Resolve client name
     name = client_email
     try:
-        from pipeline.to_sheets import connect
+        from pipeline.to_sheets import get_all_values_safe, open_sheet_safe, open_worksheet_safe
 
-        gc = connect()
-        sh = gc.open(os.environ.get("SHEET_NAME", "Pilot CRM"))
-        ws = sh.worksheet("Clients")
-        for row in ws.get_all_values()[1:]:
+        sh = open_sheet_safe(os.environ.get("SHEET_NAME", "Pilot CRM"))
+        ws = open_worksheet_safe(sh, "Clients")
+        for row in get_all_values_safe(ws)[1:]:
             if row and len(row) > 2 and row[2].strip().lower() == client_email.lower():
                 name = row[1] or client_email
                 break
@@ -375,7 +374,6 @@ th,td{{text-align:left;padding:0.5rem;border-bottom:1px solid #ddd;font-size:0.9
 def send_invoice(client_email: str, period: str = "month") -> dict:
     """Generate invoice PDF and email the client with TRC20 payment details."""
     from pipeline.email_sender import send_email
-    from pipeline.to_sheets import connect
 
     inv = calculate_invoice(client_email, period=period, write_files=True)
     if float(inv.get("amount") or 0) <= 0:
@@ -384,10 +382,11 @@ def send_invoice(client_email: str, period: str = "month") -> dict:
 
     first = "there"
     try:
-        gc = connect()
-        sh = gc.open(os.environ.get("SHEET_NAME", "Pilot CRM"))
-        ws = sh.worksheet("Clients")
-        for row in ws.get_all_values()[1:]:
+        from pipeline.to_sheets import get_all_values_safe, open_sheet_safe, open_worksheet_safe
+
+        sh = open_sheet_safe(os.environ.get("SHEET_NAME", "Pilot CRM"))
+        ws = open_worksheet_safe(sh, "Clients")
+        for row in get_all_values_safe(ws)[1:]:
             if row and len(row) > 2 and row[2].strip().lower() == client_email.lower():
                 first = (row[1] or "").split()[0] or "there"
                 break
@@ -431,15 +430,17 @@ def send_invoice(client_email: str, period: str = "month") -> dict:
     try:
         from delivery.client_tracker import ensure_tracker_columns, _clients_ws
 
+        from pipeline.to_sheets import get_all_values_safe, update_cell_safe
+
         ws = _clients_ws()
         cols = ensure_tracker_columns(ws)
-        values = ws.get_all_values()
+        values = get_all_values_safe(ws)
         for i, row in enumerate(values[1:], start=2):
             if len(row) > 2 and row[2].strip().lower() == client_email.lower():
                 if "Payment Status" in cols:
-                    ws.update_cell(i, cols["Payment Status"], "unpaid")
+                    update_cell_safe(ws, i, cols["Payment Status"], "unpaid")
                 if "Total Billed" in cols:
-                    ws.update_cell(i, cols["Total Billed"], str(int(inv["amount"])))
+                    update_cell_safe(ws, i, cols["Total Billed"], str(int(inv["amount"])))
                 break
     except Exception as e:
         print(f"Clients payment status update skipped: {e}")
@@ -456,16 +457,15 @@ def send_invoices_for_active_clients(period: str = "month") -> dict:
     # Also include Completed pilots awaiting payment
     clients = list(active_clients())
     try:
-        from pipeline.to_sheets import connect
+        from pipeline.to_sheets import get_all_values_safe, open_sheet_safe, open_worksheet_safe, row_values_safe
 
-        gc = connect()
-        sh = gc.open(os.environ.get("SHEET_NAME", "Pilot CRM"))
-        ws = sh.worksheet("Clients")
-        headers = [h.strip().lower() for h in ws.row_values(1)]
+        sh = open_sheet_safe(os.environ.get("SHEET_NAME", "Pilot CRM"))
+        ws = open_worksheet_safe(sh, "Clients")
+        headers = [h.strip().lower() for h in row_values_safe(ws, 1)]
         email_i = headers.index("email") if "email" in headers else 2
         status_i = headers.index("status") if "status" in headers else None
         pay_i = headers.index("payment status") if "payment status" in headers else None
-        for row in ws.get_all_values()[1:]:
+        for row in get_all_values_safe(ws)[1:]:
             if len(row) <= email_i:
                 continue
             email = row[email_i].strip()
@@ -521,16 +521,15 @@ def _parse_created(raw: str) -> date | None:
 
 def clients_due_for_pilot_invoice(days: int = PILOT_INVOICE_DAYS) -> list[dict]:
     """Clients whose Created date is >= `days` ago and not yet billed/completed."""
-    from pipeline.to_sheets import connect
+    from pipeline.to_sheets import get_all_values_safe, open_sheet_safe, open_worksheet_safe
 
-    gc = connect()
-    sh = gc.open(os.environ.get("SHEET_NAME", "Pilot CRM"))
+    sh = open_sheet_safe(os.environ.get("SHEET_NAME", "Pilot CRM"))
     try:
-        ws = sh.worksheet("Clients")
+        ws = open_worksheet_safe(sh, "Clients")
     except Exception:
         return []
 
-    values = ws.get_all_values()
+    values = get_all_values_safe(ws)
     if not values:
         return []
     headers = [h.strip() for h in values[0]]

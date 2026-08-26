@@ -11,7 +11,7 @@ load_dotenv()
 
 from .email_sender import MAX_PER_RUN, send_batch
 from .templates import build_agency_email, print_template_stats
-from .to_sheets import HEADERS, get_worksheet, is_email
+from .to_sheets import HEADERS, get_all_values_safe, get_worksheet_safe, is_email, update_cell_safe
 
 # Column letters / 1-based indexes matching HEADERS
 COL = {name: i + 1 for i, name in enumerate(HEADERS)}
@@ -36,8 +36,8 @@ def _first_name(contact: str) -> str:
 
 def get_unsent_leads() -> list[dict]:
     """Leads with valid email, empty Sent, Verified in {yes, manual}."""
-    ws = get_worksheet("Agencies")
-    values = ws.get_all_values()
+    ws = get_worksheet_safe("Agencies")
+    values = get_all_values_safe(ws)
     leads: list[dict] = []
 
     for i, raw in enumerate(values):
@@ -65,8 +65,8 @@ def get_unsent_leads() -> list[dict]:
 
 def mark_sent(row_index: int, date_str: str) -> None:
     """Write YYYY-MM-DD into the Sent column for a sheet row."""
-    ws = get_worksheet("Agencies")
-    ws.update_cell(row_index, SENT_COL, date_str)
+    ws = get_worksheet_safe("Agencies")
+    update_cell_safe(ws, row_index, SENT_COL, date_str)
 
 
 def _opener_from_lead(lead: dict) -> str:
@@ -112,8 +112,8 @@ def _append_template_note(row_index: int, notes: str, template_id: str) -> None:
     if marker in (notes or ""):
         return
     new_notes = f"{(notes or '').rstrip()}; {marker}".strip("; ").strip()
-    ws = get_worksheet("Agencies")
-    ws.update_cell(row_index, COL["Notes"], new_notes)
+    ws = get_worksheet_safe("Agencies")
+    update_cell_safe(ws, row_index, COL["Notes"], new_notes)
 
 
 def run_first_touch(limit: int = 5) -> dict:

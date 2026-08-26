@@ -92,13 +92,12 @@ def _locations_from_icp(icp: dict) -> list[str]:
 
 def load_client_icp(client_email: str) -> dict:
     """Read ICP filters from Pilot CRM / Clients."""
-    from pipeline.to_sheets import connect
+    from pipeline.to_sheets import get_all_values_safe, open_sheet_safe, open_worksheet_safe
 
     email = client_email.strip().lower()
-    gc = connect()
-    sh = gc.open(os.environ.get("SHEET_NAME", "Pilot CRM"))
-    ws = sh.worksheet("Clients")
-    values = ws.get_all_values()
+    sh = open_sheet_safe(os.environ.get("SHEET_NAME", "Pilot CRM"))
+    ws = open_worksheet_safe(sh, "Clients")
+    values = get_all_values_safe(ws)
     if not values:
         raise RuntimeError("Clients sheet empty")
     headers = [h.strip() for h in values[0]]

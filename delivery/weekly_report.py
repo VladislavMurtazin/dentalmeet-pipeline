@@ -115,7 +115,6 @@ h1{{font-size:1.4rem}} .muted{{color:#666}}
 
 def send_weekly_report(client_email: str) -> bool:
     from pipeline.email_sender import send_email
-    from pipeline.to_sheets import connect
 
     stats = collect_week_stats(client_email)
     report_path = generate_weekly_report(client_email)
@@ -123,10 +122,11 @@ def send_weekly_report(client_email: str) -> bool:
     # client name
     first = "there"
     try:
-        gc = connect()
-        sh = gc.open(os.environ.get("SHEET_NAME", "Pilot CRM"))
-        ws = sh.worksheet("Clients")
-        for row in ws.get_all_values()[1:]:
+        from pipeline.to_sheets import get_all_values_safe, open_sheet_safe, open_worksheet_safe
+
+        sh = open_sheet_safe(os.environ.get("SHEET_NAME", "Pilot CRM"))
+        ws = open_worksheet_safe(sh, "Clients")
+        for row in get_all_values_safe(ws)[1:]:
             if row and row[2].strip().lower() == client_email.lower():
                 first = (row[1] or "").split()[0] or "there"
                 break
@@ -161,15 +161,14 @@ def send_weekly_report(client_email: str) -> bool:
 
 
 def active_clients() -> list[str]:
-    from pipeline.to_sheets import connect
+    from pipeline.to_sheets import get_all_values_safe, open_sheet_safe, open_worksheet_safe
 
-    gc = connect()
-    sh = gc.open(os.environ.get("SHEET_NAME", "Pilot CRM"))
+    sh = open_sheet_safe(os.environ.get("SHEET_NAME", "Pilot CRM"))
     try:
-        ws = sh.worksheet("Clients")
+        ws = open_worksheet_safe(sh, "Clients")
     except Exception:
         return []
-    values = ws.get_all_values()
+    values = get_all_values_safe(ws)
     if not values:
         return []
     headers = [h.strip().lower() for h in values[0]]

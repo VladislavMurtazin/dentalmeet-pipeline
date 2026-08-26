@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from .email_sender import send_email
-from .to_sheets import connect, is_email
+from .to_sheets import is_email
 
 # USDT TRC20 contract on Tron
 USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
@@ -186,23 +186,26 @@ def _extract_to_address(data: dict) -> str:
 def _clients_ws():
     import gspread
 
-    gc = connect()
+    from .to_sheets import open_sheet_safe, open_worksheet_safe
+
     sheet_name = os.environ.get("SHEET_NAME", "Pilot CRM")
-    sh = gc.open(sheet_name)
+    sh = open_sheet_safe(sheet_name)
     try:
-        return sh.worksheet("Clients")
+        return open_worksheet_safe(sh, "Clients")
     except gspread.WorksheetNotFound as e:
         raise RuntimeError("Clients worksheet missing — run check_forms first") from e
 
 
 def _ensure_payment_columns(ws) -> dict[str, int]:
     """Ensure payment columns exist; return header→1-based col index."""
-    headers = ws.row_values(1)
+    from .to_sheets import row_values_safe, update_cell_safe
+
+    headers = row_values_safe(ws, 1)
     header_map = {h.strip(): i + 1 for i, h in enumerate(headers) if h.strip()}
     for name in PAYMENT_HEADERS:
         if name not in header_map:
             col = len(headers) + 1
-            ws.update_cell(1, col, name)
+            update_cell_safe(ws, 1, col, name)
             headers.append(name)
             header_map[name] = col
     return header_map
@@ -219,9 +222,11 @@ def mark_client_as_paid(client_email: str, txid: str) -> dict:
         print(f"payment not confirmed: {result}")
         return {"ok": False, "verify": result}
 
+    from .to_sheets import get_all_values_safe, update_cell_safe
+
     ws = _clients_ws()
     cols = _ensure_payment_columns(ws)
-    values = ws.get_all_values()
+    values = get_all_values_safe(ws)
     headers = values[0] if values else []
     email_col = None
     name_col = None
@@ -252,12 +257,12 @@ def mark_client_as_paid(client_email: str, txid: str) -> dict:
 
     today = date.today().isoformat()
     amount = result.get("amount") or ""
-    ws.update_cell(row_index, cols["Payment Status"], "paid")
-    ws.update_cell(row_index, cols["Payment TXID"], txid)
-    ws.update_cell(row_index, cols["Payment Date"], today)
-    ws.update_cell(row_index, cols["Payment Amount"], str(amount))
+    update_cell_safe(ws, row_index, cols["Payment Status"], "paid")
+    update_cell_safe(ws, row_index, cols["Payment TXID"], txid)
+    update_cell_safe(ws, row_index, cols["Payment Date"], today)
+    update_cell_safe(ws, row_index, cols["Payment Amount"], str(amount))
     if status_col is not None:
-        ws.update_cell(row_index, status_col + 1, "paid")
+        update_cell_safe(ws, row_index, status_col + 1, "paid")
 
     first = name.split()[0] if name else "there"
     subject = "payment confirmed — launching soon"

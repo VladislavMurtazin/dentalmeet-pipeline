@@ -173,7 +173,7 @@ def run_launch_pending(_args: argparse.Namespace) -> None:
 
 def run_draft_reply(args: argparse.Namespace) -> None:
     from .ai_reply_assistant import draft_reply, save_draft
-    from .to_sheets import get_worksheet, is_email
+    from .to_sheets import get_all_values_safe, get_worksheet_safe, is_email
 
     email = (args.email or "").strip().lower()
     body = (args.body or "").strip()
@@ -184,8 +184,8 @@ def run_draft_reply(args: argparse.Namespace) -> None:
     lead_context = {"email": email, "contact": "", "company": "", "title": ""}
     if is_email(email):
         try:
-            ws = get_worksheet("Agencies")
-            for row in ws.get_all_values()[1:]:
+            ws = get_worksheet_safe("Agencies")
+            for row in get_all_values_safe(ws)[1:]:
                 row = (row + [""] * len(HEADERS))[: len(HEADERS)]
                 if row[3].strip().lower() == email:
                     lead_context = {

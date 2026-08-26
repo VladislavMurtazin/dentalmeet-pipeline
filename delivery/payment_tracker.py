@@ -160,9 +160,11 @@ def mark_invoice_as_paid(
     if expected is None:
         # fall back to sheet Total Billed
         try:
+            from pipeline.to_sheets import get_all_values_safe
+
             ws = _clients_ws()
             cols = ensure_tracker_columns(ws)
-            for row in ws.get_all_values()[1:]:
+            for row in get_all_values_safe(ws)[1:]:
                 if len(row) > 2 and row[2].strip().lower() == email:
                     raw = row[cols["Total Billed"] - 1] if "Total Billed" in cols else ""
                     expected = float(str(raw).replace("$", "").replace(",", "") or 150)
@@ -177,9 +179,11 @@ def mark_invoice_as_paid(
         print(f"payment not confirmed: {result}")
         return {"ok": False, "verify": result}
 
+    from pipeline.to_sheets import get_all_values_safe, update_cell_safe
+
     ws = _clients_ws()
     cols = ensure_tracker_columns(ws)
-    values = ws.get_all_values()
+    values = get_all_values_safe(ws)
     row_index = None
     name = ""
     for i, row in enumerate(values[1:], start=2):
@@ -193,15 +197,15 @@ def mark_invoice_as_paid(
     today = date.today().isoformat()
     amount = result.get("amount") or expected
     if "Payment Status" in cols:
-        ws.update_cell(row_index, cols["Payment Status"], "paid")
+        update_cell_safe(ws, row_index, cols["Payment Status"], "paid")
     if "Payment TXID" in cols:
-        ws.update_cell(row_index, cols["Payment TXID"], txid)
+        update_cell_safe(ws, row_index, cols["Payment TXID"], txid)
     if "Payment Date" in cols:
-        ws.update_cell(row_index, cols["Payment Date"], today)
+        update_cell_safe(ws, row_index, cols["Payment Date"], today)
     if "Payment Amount" in cols:
-        ws.update_cell(row_index, cols["Payment Amount"], str(amount))
+        update_cell_safe(ws, row_index, cols["Payment Amount"], str(amount))
     if "Total Paid" in cols:
-        ws.update_cell(row_index, cols["Total Paid"], str(amount))
+        update_cell_safe(ws, row_index, cols["Total Paid"], str(amount))
     if "Total Lifetime Value" in cols:
         try:
             prev = float(
@@ -211,16 +215,16 @@ def mark_invoice_as_paid(
             )
         except Exception:
             prev = 0.0
-        ws.update_cell(
-            row_index, cols["Total Lifetime Value"], str(int(prev + float(amount)))
+        update_cell_safe(
+            ws, row_index, cols["Total Lifetime Value"], str(int(prev + float(amount)))
         )
     if "Status" in cols:
         # keep Completed for finished pilots; else paid
         cur = values[row_index - 1][cols["Status"] - 1] if cols["Status"] <= len(values[row_index - 1]) else ""
         if (cur or "").lower() not in ("completed", "churned"):
-            ws.update_cell(row_index, cols["Status"], "paid")
+            update_cell_safe(ws, row_index, cols["Status"], "paid")
     if "Upfront Paid" in cols:
-        ws.update_cell(row_index, cols["Upfront Paid"], "Yes")
+        update_cell_safe(ws, row_index, cols["Upfront Paid"], "Yes")
 
     # Registry
     data = _load_registry()
@@ -257,7 +261,6 @@ def mark_invoice_as_paid(
 def check_unpaid_invoices() -> dict:
     """Remind clients whose unpaid invoices are past due (7+ days)."""
     from pipeline.email_sender import send_email
-    from pipeline.to_sheets import connect
 
     today = date.today()
     reminded = []
@@ -265,10 +268,11 @@ def check_unpaid_invoices() -> dict:
     name_cache: dict[str, str] = {}
 
     try:
-        gc = connect()
-        sh = gc.open(os.environ.get("SHEET_NAME", "Pilot CRM"))
-        ws = sh.worksheet("Clients")
-        for row in ws.get_all_values()[1:]:
+        from pipeline.to_sheets import get_all_values_safe, open_sheet_safe, open_worksheet_safe
+
+        sh = open_sheet_safe(os.environ.get("SHEET_NAME", "Pilot CRM"))
+        ws = open_worksheet_safe(sh, "Clients")
+        for row in get_all_values_safe(ws)[1:]:
             if row and len(row) > 2:
                 name_cache[row[2].strip().lower()] = (row[1] or "").split()[0] or "there"
     except Exception:

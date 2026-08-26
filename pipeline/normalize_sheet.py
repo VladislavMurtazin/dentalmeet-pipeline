@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from .to_sheets import HEADERS, get_worksheet, is_email
+from .to_sheets import HEADERS, get_worksheet_safe, is_email, retry_sheets_call, sheets_update_safe
 
 SEP_RE = re.compile(r"^-+$")
 
@@ -99,7 +99,7 @@ def _dedup(records: list[dict]) -> list[dict]:
 
 def _from_list1(ws_list1) -> list[dict]:
     """Read manual rows: Company, Contact, Title, Email, Notes."""
-    values = ws_list1.get_all_values()
+    values = retry_sheets_call(ws_list1.get_all_values)
     if not values:
         return []
     out = []
@@ -145,14 +145,14 @@ def _from_list1(ws_list1) -> list[dict]:
 
 
 def normalize() -> None:
-    sh = get_worksheet().spreadsheet
-    ws = sh.worksheet("Agencies")
+    sh = get_worksheet_safe().spreadsheet
+    ws = retry_sheets_call(sh.worksheet, "Agencies")
     try:
-        ws_list1 = sh.worksheet("Лист1")
+        ws_list1 = retry_sheets_call(sh.worksheet, "Лист1")
     except Exception:
         ws_list1 = None
 
-    raw = ws.get_all_values()
+    raw = retry_sheets_call(ws.get_all_values)
     total_rows = len(raw)
     extracted: list[dict] = []
     junk = 0
@@ -185,16 +185,17 @@ def normalize() -> None:
     # Rebuild Agencies: clear, resize, write header + rows
     from .to_sheets import N_COLS, HEADER_RANGE
 
-    ws.clear()
+    retry_sheets_call(ws.clear)
     target_rows = max(len(records) + 10, 100)
-    ws.resize(rows=target_rows, cols=N_COLS)
+    retry_sheets_call(ws.resize, rows=target_rows, cols=N_COLS)
 
-    ws.update(range_name=HEADER_RANGE, values=[HEADERS], value_input_option="USER_ENTERED")
+    sheets_update_safe(ws, range_name=HEADER_RANGE, values=[HEADERS], value_input_option="USER_ENTERED")
     if records:
         body = [_record_list(r) for r in records]
         end = 1 + len(body)
         end_col = chr(ord("A") + N_COLS - 1)
-        ws.update(
+        sheets_update_safe(
+            ws,
             range_name=f"A2:{end_col}{end}",
             values=body,
             value_input_option="USER_ENTERED",

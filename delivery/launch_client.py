@@ -122,22 +122,23 @@ def validate_brief(brief: dict) -> dict:
 
 def _update_client_status(client_email: str, status: str, note: str = "") -> None:
     from .client_tracker import _clients_ws, _find_matches, _get, ensure_tracker_columns
+    from pipeline.to_sheets import get_all_values_safe, update_cell_safe
 
     ws = _clients_ws()
     cols = ensure_tracker_columns(ws)
-    values = ws.get_all_values()
+    values = get_all_values_safe(ws)
     hits = _find_matches(values, cols, client_email, "")
     if not hits:
         return
     row_index, row = hits[-1]
     if "Status" in cols:
-        ws.update_cell(row_index, cols["Status"], status)
+        update_cell_safe(ws, row_index, cols["Status"], status)
     if note and "Notes" in cols:
         prev = _get(row, cols, "Notes")
         marker = note.strip()
         if marker and marker not in prev:
             new_notes = f"{prev}; {marker}".strip("; ").strip() if prev else marker
-            ws.update_cell(row_index, cols["Notes"], new_notes)
+            update_cell_safe(ws, row_index, cols["Notes"], new_notes)
 
 
 def send_form_fix_email(email: str, name: str, errors: list[str]) -> bool:
@@ -271,15 +272,14 @@ def launch_client(
 
 def _client_rows() -> list[dict]:
     """All Clients rows as dicts with email/status/created/type."""
-    from pipeline.to_sheets import connect
+    from pipeline.to_sheets import get_all_values_safe, open_sheet_safe, open_worksheet_safe
 
-    gc = connect()
-    sh = gc.open(os.environ.get("SHEET_NAME", "Pilot CRM"))
+    sh = open_sheet_safe(os.environ.get("SHEET_NAME", "Pilot CRM"))
     try:
-        ws = sh.worksheet("Clients")
+        ws = open_worksheet_safe(sh, "Clients")
     except Exception:
         return []
-    values = ws.get_all_values()
+    values = get_all_values_safe(ws)
     if not values:
         return []
     headers = [h.strip() for h in values[0]]

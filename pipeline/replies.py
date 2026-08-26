@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from .to_sheets import HEADERS, get_worksheet, is_email
+from .to_sheets import HEADERS, get_all_values_safe, get_worksheet_safe, is_email, update_cell_safe
 
 COL = {name: i + 1 for i, name in enumerate(HEADERS)}
 REPLIED_COL = COL["Replied"]
@@ -177,8 +177,8 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
     )
     from .async_onboarding import send_async_onboarding
 
-    ws = get_worksheet("Agencies")
-    values = ws.get_all_values()
+    ws = get_worksheet_safe("Agencies")
+    values = get_all_values_safe(ws)
 
     by_email: dict[str, dict] = {}
     for i, raw in enumerate(values):
@@ -232,14 +232,14 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
         action = ""
 
         try:
-            ws.update_cell(row_index, REPLIED_COL, "yes")
-            ws.update_cell(row_index, REPLY_TYPE_COL, reply_type)
+            update_cell_safe(ws,row_index, REPLIED_COL, "yes")
+            update_cell_safe(ws,row_index, REPLY_TYPE_COL, reply_type)
 
             if reply_type == "unsubscribe":
                 add_to_suppression(addr)
                 notes = (hit.get("notes") or "").rstrip()
                 marker = f"; unsubscribed {today}"
-                ws.update_cell(
+                update_cell_safe(ws,
                     row_index,
                     NOTES_COL,
                     f"{notes}{marker}" if notes else marker.lstrip("; ").strip(),
@@ -253,10 +253,10 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
                 already = "async_onboarding_sent" in (hit.get("meeting") or "")
                 if not already:
                     if send_async_onboarding(addr, first, hit.get("company", "")):
-                        ws.update_cell(row_index, MEETING_COL, "async_onboarding_sent")
+                        update_cell_safe(ws,row_index, MEETING_COL, "async_onboarding_sent")
                         notes = (hit.get("notes") or "").rstrip()
                         marker = f"; async_onboarding_sent {today}"
-                        ws.update_cell(
+                        update_cell_safe(ws,
                             row_index,
                             NOTES_COL,
                             f"{notes}{marker}" if notes else marker.lstrip("; ").strip(),
@@ -272,7 +272,7 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
                 if send_payment_instructions(addr, first):
                     notes = (hit.get("notes") or "").rstrip()
                     marker = f"; payment_instructions_sent {today}"
-                    ws.update_cell(
+                    update_cell_safe(ws,
                         row_index,
                         NOTES_COL,
                         f"{notes}{marker}" if notes else marker.lstrip("; ").strip(),
@@ -295,7 +295,7 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
                 path = save_draft(addr, body, draft, hit)
                 notes = (hit.get("notes") or "").rstrip()
                 marker = f"; draft_saved {today} ({path.name})"
-                ws.update_cell(
+                update_cell_safe(ws,
                     row_index,
                     NOTES_COL,
                     f"{notes}{marker}" if notes else marker.lstrip("; ").strip(),

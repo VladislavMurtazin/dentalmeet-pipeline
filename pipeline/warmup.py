@@ -248,10 +248,10 @@ def count_real_sends_today(*, today: date | None = None) -> int:
     """Count Agencies rows whose Sent column is today's date (YYYY-MM-DD)."""
     today_str = (today or _utc_now().date()).isoformat()
     try:
-        from .to_sheets import HEADERS, get_worksheet
+        from .to_sheets import HEADERS, get_all_values_safe, get_worksheet_safe
 
-        ws = get_worksheet()
-        values = ws.get_all_values()
+        ws = get_worksheet_safe()
+        values = get_all_values_safe(ws)
         if not values:
             return 0
         header = [(h or "").strip() for h in values[0]]

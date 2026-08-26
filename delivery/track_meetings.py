@@ -85,12 +85,11 @@ def _calendly_token_for_client(client_email: str) -> str:
     """Per-client token from Clients sheet, else env CALENDLY_API_TOKEN."""
     email = (client_email or "").strip().lower()
     try:
-        from pipeline.to_sheets import connect
+        from pipeline.to_sheets import get_all_values_safe, open_sheet_safe, open_worksheet_safe
 
-        gc = connect()
-        sh = gc.open(os.environ.get("SHEET_NAME", "Pilot CRM"))
-        ws = sh.worksheet("Clients")
-        values = ws.get_all_values()
+        sh = open_sheet_safe(os.environ.get("SHEET_NAME", "Pilot CRM"))
+        ws = open_worksheet_safe(sh, "Clients")
+        values = get_all_values_safe(ws)
         if not values:
             return os.environ.get("CALENDLY_API_TOKEN", "").strip()
         headers = [h.strip() for h in values[0]]
@@ -426,21 +425,26 @@ def count_billable_meetings(client_email: str, period: str = "month") -> dict:
 
 
 def update_clients_meeting_count(client_email: str, total: int) -> None:
-    from pipeline.to_sheets import connect
+    from pipeline.to_sheets import (
+        get_all_values_safe,
+        open_sheet_safe,
+        open_worksheet_safe,
+        row_values_safe,
+        update_cell_safe,
+    )
 
-    gc = connect()
-    sh = gc.open(os.environ.get("SHEET_NAME", "Pilot CRM"))
-    ws = sh.worksheet("Clients")
-    values = ws.get_all_values()
+    sh = open_sheet_safe(os.environ.get("SHEET_NAME", "Pilot CRM"))
+    ws = open_worksheet_safe(sh, "Clients")
+    values = get_all_values_safe(ws)
     headers = values[0]
     if "Meetings" not in headers:
-        ws.update_cell(1, len(headers) + 1, "Meetings")
-        headers = ws.row_values(1)
+        update_cell_safe(ws, 1, len(headers) + 1, "Meetings")
+        headers = row_values_safe(ws, 1)
     mcol = headers.index("Meetings") + 1
     ecol = headers.index("Email") + 1 if "Email" in headers else 3
     for i, row in enumerate(values[1:], start=2):
         if len(row) >= ecol and row[ecol - 1].strip().lower() == client_email.lower():
-            ws.update_cell(i, mcol, str(total))
+            update_cell_safe(ws, i, mcol, str(total))
             print(f"Clients row {i}: Meetings={total}")
             return
 

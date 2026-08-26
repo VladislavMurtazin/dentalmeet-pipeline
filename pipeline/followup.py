@@ -12,7 +12,7 @@ load_dotenv()
 
 from .email_sender import send_batch
 from .templates import CALENDLY_URL, FOLLOWUP_1_TEMPLATE, FOLLOWUP_2_TEMPLATE
-from .to_sheets import HEADERS, get_worksheet, is_email
+from .to_sheets import HEADERS, get_all_values_safe, get_worksheet_safe, is_email, update_cell_safe
 
 COL = {name: i + 1 for i, name in enumerate(HEADERS)}
 NOTES_COL = COL["Notes"]
@@ -66,8 +66,8 @@ def _fu_already_sent(notes: str, followup_number: int) -> bool:
 
 def get_followup_candidates(days_since_sent: int, followup_number: int) -> list[dict]:
     """Leads whose Sent date is >= days_since_sent ago and Replied is empty."""
-    ws = get_worksheet("Agencies")
-    values = ws.get_all_values()
+    ws = get_worksheet_safe("Agencies")
+    values = get_all_values_safe(ws)
     today = date.today()
     cutoff = today - timedelta(days=int(days_since_sent))
     candidates: list[dict] = []
@@ -120,8 +120,8 @@ def _append_notes(row_index: int, current_notes: str, marker: str) -> None:
     if marker.strip() in notes:
         return
     new_notes = f"{notes}{marker}" if notes else marker.lstrip("; ").strip()
-    ws = get_worksheet("Agencies")
-    ws.update_cell(row_index, NOTES_COL, new_notes)
+    ws = get_worksheet_safe("Agencies")
+    update_cell_safe(ws, row_index, NOTES_COL, new_notes)
 
 
 def run_followups(followup_number: int) -> dict:
