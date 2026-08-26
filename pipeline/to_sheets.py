@@ -56,7 +56,7 @@ def connect():
     return gspread.service_account_from_dict(json.loads(raw))
 
 
-def retry_sheets_call(func, max_attempts=6, *args, **kwargs):
+def retry_sheets_call(func, /, *args, max_attempts: int = 6, **kwargs):
     """
     Retries a Google Sheets API call with exponential backoff.
     On 503, 429, or connection errors: wait and retry.

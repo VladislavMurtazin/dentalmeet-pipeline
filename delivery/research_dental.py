@@ -24,15 +24,78 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", re.I)
 
 DECISION_TITLES = [
     "Owner",
+    "Doctor",
     "Founder",
-    "Practice Owner",
     "CEO",
+    "Principal",
+    "Dentist",
+    "DDS",
+    "DMD",
+    "Practice Owner",
     "President",
     "Office Manager",
     "Treatment Coordinator",
     "Director",
     "Administrator",
 ]
+
+DENTAL_SEARCH_VARIANTS = [
+    # By specialty (10)
+    "cosmetic dentistry",
+    "dental implants",
+    "orthodontist",
+    "pediatric dentist",
+    "periodontist",
+    "endodontist",
+    "oral surgeon",
+    "dental veneers",
+    "teeth whitening",
+    "invisalign provider",
+    # By practice type (6)
+    "dental clinic",
+    "dental practice",
+    "dental office",
+    "family dentistry",
+    "dental group",
+    "dental studio",
+    # By services (9)
+    "emergency dentist",
+    "sedation dentistry",
+    "full mouth reconstruction",
+    "dental crowns",
+    "dental bridges",
+    "dentures",
+    "dental hygiene",
+    "dental surgery",
+    "preventive dentistry",
+]
+
+DENTAL_INDUSTRIES = [
+    "Dental",
+    "Medical Practices",
+    "Healthcare",
+    "Hospital & Health Care",
+]
+
+MIN_GEO_RESULTS = 50
+
+# Neighboring areas for geo expansion (primary metro → nearby)
+GEO_EXPANSION_MAP: dict[str, list[str]] = {
+    "los angeles": ["Orange County, CA", "San Diego, CA", "Inland Empire, CA"],
+    "new york": ["New Jersey", "Connecticut", "Long Island, NY"],
+    "chicago": ["Illinois", "Indiana", "Wisconsin"],
+    "houston": ["Dallas, TX", "Austin, TX", "San Antonio, TX"],
+    "miami": ["Fort Lauderdale, FL", "West Palm Beach, FL", "Tampa, FL"],
+    "dallas": ["Fort Worth, TX", "Austin, TX", "Houston, TX"],
+    "phoenix": ["Scottsdale, AZ", "Tucson, AZ", "Las Vegas, NV"],
+    "philadelphia": ["New Jersey", "Delaware", "Baltimore, MD"],
+    "san francisco": ["San Jose, CA", "Oakland, CA", "Sacramento, CA"],
+    "seattle": ["Portland, OR", "Tacoma, WA", "Spokane, WA"],
+    "denver": ["Colorado Springs, CO", "Boulder, CO", "Fort Collins, CO"],
+    "atlanta": ["Charlotte, NC", "Nashville, TN", "Birmingham, AL"],
+    "boston": ["Rhode Island", "New Hampshire", "Connecticut"],
+    "austin": ["San Antonio, TX", "Houston, TX", "Dallas, TX"],
+}
 
 # ~100 calls/min ⇒ sleep 0.65s between calls
 _MIN_INTERVAL = 0.65
@@ -81,13 +144,84 @@ def _domain_from_url(url: str) -> str:
 
 
 def _locations_from_icp(icp: dict) -> list[str]:
-    geo = (icp.get("geographic_target") or icp.get("geo") or "United States").strip()
+    geo = (
+        icp.get("dental_search_geo")
+        or icp.get("geographic_target")
+        or icp.get("geo")
+        or "United States"
+    ).strip()
     locations = [g.strip() for g in geo.replace(";", ",").split(",") if g.strip()]
     if not locations:
         locations = ["United States"]
     if any(x.lower() in ("nationwide", "usa", "us", "united states") for x in locations):
         return ["United States"]
     return locations
+
+
+def _normalize_geo_key(geo: str) -> str:
+    return " ".join((geo or "").lower().replace(",", " ").split())
+
+
+def _primary_geo(icp: dict) -> str:
+    geo = (icp.get("client_geo") or icp.get("geographic_target") or icp.get("geo") or "").strip()
+    if not geo:
+        return "United States"
+    parts = [g.strip() for g in geo.replace(";", ",").split(",") if g.strip()]
+    return parts[0] if parts else geo
+
+
+def _expand_geo_enabled(icp: dict) -> bool:
+    raw = icp.get("expand_geo")
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw or icp.get("notes") or "").lower()
+    return "expand_geo" in text or "expand geo" in text
+
+
+def _suggest_geo_expansion(primary_geo: str) -> list[str]:
+    key = _normalize_geo_key(primary_geo)
+    for metro, neighbors in GEO_EXPANSION_MAP.items():
+        if metro in key:
+            return neighbors
+    # Generic: append state-level if city, state present
+    if "," in primary_geo:
+        state = primary_geo.split(",")[-1].strip()
+        if state and len(state) <= 3:
+            return [state, "United States"]
+    return []
+
+
+def _build_search_keywords(icp: dict) -> list[str]:
+    """Combine each DENTAL_SEARCH_VARIANT with client geo."""
+    primary = _primary_geo(icp)
+    geo_suffix = primary.replace(",", "").strip()
+    return [f"{variant} {geo_suffix}".strip() for variant in DENTAL_SEARCH_VARIANTS]
+
+
+def _save_client_geo_info(
+    client_email: str,
+    *,
+    client_geo: str,
+    search_geo: str,
+    geo_expanded: bool,
+) -> None:
+    from pipeline.to_sheets import get_all_values_safe, update_cell_safe
+    from delivery.client_tracker import _clients_ws, _find_matches, ensure_tracker_columns
+
+    ws = _clients_ws()
+    cols = ensure_tracker_columns(ws)
+    values = get_all_values_safe(ws)
+    hits = _find_matches(values, cols, client_email.strip().lower(), "")
+    if not hits:
+        return
+    row_index, _ = hits[-1]
+    for field, val in (
+        ("client_geo", client_geo),
+        ("dental_search_geo", search_geo),
+        ("geo_expanded", "true" if geo_expanded else "false"),
+    ):
+        if field in cols:
+            update_cell_safe(ws, row_index, cols[field], val)
 
 
 def load_client_icp(client_email: str) -> dict:
@@ -117,11 +251,18 @@ def load_client_icp(client_email: str) -> dict:
                 "client_email": email,
                 "company": get(row, "Company"),
                 "name": get(row, "Name"),
+                "title": get(row, "Title") or "Founder",
                 "practice_types": get(row, "ICP"),
                 "geographic_target": get(row, "Geo"),
+                "client_geo": get(row, "client_geo") or get(row, "Geo"),
+                "dental_search_geo": get(row, "dental_search_geo") or get(row, "Geo"),
+                "geo_expanded": get(row, "geo_expanded"),
+                "expand_geo": get(row, "expand_geo"),
                 "services_needed": get(row, "Services"),
                 "calendly": get(row, "Calendly"),
                 "pricing": get(row, "Pricing"),
+                "workspace_status": get(row, "workspace_status") or "pending",
+                "notes": get(row, "Notes"),
             }
             print(
                 f"ICP loaded for {email}: "
@@ -209,49 +350,70 @@ def _match_person_by_id(person_id: str) -> dict | None:
 
 
 def _api_search_pages(icp: dict, limit: int) -> list[dict]:
-    """POST mixed_people/api_search (no emails on most plans — IDs only)."""
+    """Search all keyword variants with Apollo filters (verified emails only)."""
     locations = _locations_from_icp(icp)
-    # Keep keywords simple — appending ICP phrases like "general dentistry"
-    # often returns 0 hits on Apollo api_search.
-    keywords = "dental practice"
+    keywords_list = _build_search_keywords(icp)
+    per_variant = max(2, limit // max(len(keywords_list), 1))
 
     people: list[dict] = []
-    page = 1
-    per_page = min(100, max(25, limit))
+    seen_ids: set[str] = set()
 
-    while len(people) < limit:
-        _rate_limit()
-        payload = {
-            "q_keywords": keywords,
-            "person_titles": DECISION_TITLES,
-            "organization_locations": locations,
-            "organization_num_employees_ranges": ["1-10", "11-50", "51-200"],
-            "page": page,
-            "per_page": per_page,
-        }
-
-        r = requests.post(
-            f"{APOLLO_BASE}/mixed_people/api_search",
-            headers=_apollo_headers(),
-            json=payload,
-            timeout=45,
-        )
-        r.raise_for_status()
-        batch = r.json().get("people") or []
-        if not batch:
+    for keywords in keywords_list:
+        if len(people) >= limit:
             break
-        people.extend(batch)
-        print(f"Apollo api_search page {page}: +{len(batch)} (total {len(people)})")
-        if len(batch) < per_page:
-            break
-        page += 1
+        page = 1
+        per_page = min(25, per_variant)
+        while len(people) < limit:
+            _rate_limit()
+            payload = {
+                "q_keywords": keywords,
+                "person_titles": DECISION_TITLES,
+                "organization_locations": locations,
+                "q_organization_keyword_tags": DENTAL_INDUSTRIES,
+                "organization_num_employees_ranges": ["1-10", "11-50", "51-200"],
+                "email_status": ["verified"],
+                "contact_email_status": ["verified"],
+                "page": page,
+                "per_page": per_page,
+            }
+            r = requests.post(
+                f"{APOLLO_BASE}/mixed_people/api_search",
+                headers=_apollo_headers(),
+                json=payload,
+                timeout=45,
+            )
+            if r.status_code != 200:
+                print(f"WARN: api_search {r.status_code} for {keywords!r}: {r.text[:120]}")
+                break
+            batch = r.json().get("people") or []
+            if not batch:
+                break
+            added = 0
+            for p in batch:
+                pid = str(p.get("id") or "")
+                if pid and pid in seen_ids:
+                    continue
+                if pid:
+                    seen_ids.add(pid)
+                people.append(p)
+                added += 1
+                if len(people) >= limit:
+                    break
+            print(
+                f"Apollo [{keywords[:40]}…]: +{added} "
+                f"(total {len(people)}) loc={locations}"
+            )
+            if len(batch) < per_page:
+                break
+            page += 1
 
     return people[:limit]
 
 
 def _contacts_search_fallback(icp: dict, limit: int) -> list[dict]:
-    """Fallback: contacts/search with same geo/keywords."""
+    """Fallback: contacts/search with first keyword variant."""
     locations = _locations_from_icp(icp)
+    keywords = _build_search_keywords(icp)[0] if _build_search_keywords(icp) else "dental practice"
     out: list[dict] = []
     page = 1
     per_page = 25
@@ -261,9 +423,11 @@ def _contacts_search_fallback(icp: dict, limit: int) -> list[dict]:
             f"{APOLLO_BASE}/contacts/search",
             headers=_apollo_headers(),
             json={
-                "q_keywords": "dental practice",
+                "q_keywords": keywords,
                 "person_titles": DECISION_TITLES,
                 "organization_locations": locations,
+                "email_status": ["verified"],
+                "contact_email_status": ["verified"],
                 "page": page,
                 "per_page": per_page,
             },
@@ -288,15 +452,45 @@ def _contacts_search_fallback(icp: dict, limit: int) -> list[dict]:
 
 def find_dental_practices(icp: dict, limit: int = 500) -> list[dict]:
     """
-    Find dental decision-makers via mixed_people/api_search.
+    Find dental decision-makers via 25 keyword variants + geo.
 
     Plan without bulk_match: reveal emails with people/match per id.
-    Skips contacts with missing/invalid email (email_missing).
+    Respects dental enrichment credit budget.
     """
-    # Fetch a wider candidate pool than `limit` so match failures don't empty the list
-    search_limit = max(limit * 5, 25)
+    from pipeline.credit_budget import can_spend_dental, record_dental_credits
+
+    client_email = (icp.get("client_email") or "").strip().lower()
+    primary_geo = _primary_geo(icp)
+    icp = dict(icp)
+    icp.setdefault("client_geo", primary_geo)
+    icp.setdefault("dental_search_geo", primary_geo)
+
+    search_limit = max(limit * 3, 25)
     raw_people = _api_search_pages(icp, limit=search_limit)
-    # Prefer people Apollo says have an email
+    geo_expanded = False
+
+    if len(raw_people) < MIN_GEO_RESULTS:
+        suggestions = _suggest_geo_expansion(primary_geo)
+        print(
+            f"Found {len(raw_people)} practices in {primary_geo}. "
+            f"Expand to {', '.join(suggestions[:2]) or 'neighboring areas'}?"
+        )
+        if _expand_geo_enabled(icp) and suggestions:
+            expanded_geo = f"{primary_geo}; " + "; ".join(suggestions[:3])
+            icp["dental_search_geo"] = expanded_geo
+            icp["geographic_target"] = expanded_geo
+            geo_expanded = True
+            print(f"Geo expansion enabled → searching {expanded_geo}")
+            raw_people = _api_search_pages(icp, limit=search_limit)
+
+    if client_email:
+        _save_client_geo_info(
+            client_email,
+            client_geo=primary_geo,
+            search_geo=icp.get("dental_search_geo") or primary_geo,
+            geo_expanded=geo_expanded,
+        )
+
     raw_people.sort(key=lambda p: (0 if p.get("has_email") else 1))
 
     results: list[dict] = []
@@ -307,7 +501,6 @@ def find_dental_practices(icp: dict, limit: int = 500) -> list[dict]:
         if len(results) >= limit:
             break
 
-        # Fast path if search already includes email (rare on locked plans)
         normalized = _normalize_person(p)
         if normalized and normalized["email"] not in seen_emails:
             results.append(normalized)
@@ -318,7 +511,6 @@ def find_dental_practices(icp: dict, limit: int = 500) -> list[dict]:
             )
             continue
 
-        # Enrich one-by-one via people/match (NOT bulk_match)
         if not p.get("id"):
             skipped_missing += 1
             continue
@@ -326,7 +518,13 @@ def find_dental_practices(icp: dict, limit: int = 500) -> list[dict]:
             skipped_missing += 1
             continue
 
+        if not can_spend_dental(1, client_email or None):
+            print("Dental enrichment credit limit reached — stopping match enrichment")
+            break
+
         matched = _match_person_by_id(p["id"])
+        if matched:
+            record_dental_credits(1, client_email or None)
         if not matched:
             skipped_missing += 1
             continue
@@ -346,9 +544,13 @@ def find_dental_practices(icp: dict, limit: int = 500) -> list[dict]:
         for c in _contacts_search_fallback(icp, limit=max(25, limit)):
             if len(results) >= limit:
                 break
+            if not can_spend_dental(1, client_email or None):
+                break
             normalized = _normalize_person(c)
             if not normalized and c.get("id"):
                 matched = _match_person_by_id(c["id"])
+                if matched:
+                    record_dental_credits(1, client_email or None)
                 normalized = _normalize_person(matched or {})
             if not normalized or normalized["email"] in seen_emails:
                 skipped_missing += 1
@@ -359,7 +561,7 @@ def find_dental_practices(icp: dict, limit: int = 500) -> list[dict]:
     print(
         f"find_dental_practices: {len(results)} with valid email, "
         f"{skipped_missing} email_missing/skipped "
-        f"(from {len(raw_people)} search hits)"
+        f"(from {len(raw_people)} search hits, geo={icp.get('dental_search_geo')})"
     )
     return results[:limit]
 
@@ -452,13 +654,35 @@ def enrich_practice(practice: dict) -> dict:
     return practice
 
 
-def build_target_list(client_email: str, limit: int = 500) -> list[dict]:
+def build_target_list(client_email: str, limit: int = 500, *, dry_run: bool = False) -> list[dict]:
     """ICP → Apollo (api_search + match) → CSV under targets/."""
+    if dry_run:
+        try:
+            icp = load_client_icp(client_email)
+        except (RuntimeError, Exception):
+            icp = {
+                "client_email": client_email,
+                "geo": "Los Angeles, CA",
+                "client_geo": "Los Angeles, CA",
+                "expand_geo": True,
+            }
+        keywords = _build_search_keywords(icp)
+        primary = _primary_geo(icp)
+        print(f"DRY RUN dental search for {client_email}")
+        print(f"  client_geo: {primary}")
+        print(f"  expand_geo: {_expand_geo_enabled(icp)}")
+        print(f"  variants: {len(keywords)} keyword combinations")
+        print("  sample queries:")
+        for q in keywords[:5]:
+            print(f"    • {q}")
+        print(f"  ... and {max(0, len(keywords) - 5)} more")
+        print(f"  Apollo filters: verified email, titles={DECISION_TITLES[:5]}…")
+        print(f"  limit: {limit}")
+        return []
+
     TARGETS_DIR.mkdir(parents=True, exist_ok=True)
     icp = load_client_icp(client_email)
     practices = find_dental_practices(icp, limit=limit)
-
-    # Manual CSV fallback if Apollo yields nothing usable
     if not practices:
         safe = client_email.strip().lower().replace("@", "_at_")
         manual = TARGETS_DIR / f"{safe}_manual.csv"
@@ -535,6 +759,12 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("build_list", help="Build targets CSV from client ICP")
     p.add_argument("client_email")
     p.add_argument("--limit", type=int, default=50, help="Max practices (default 50)")
+    p.add_argument("--dry-run", action="store_true", help="Print search plan only")
+
+    p_run = sub.add_parser("run", help="Alias for build_list")
+    p_run.add_argument("client_email")
+    p_run.add_argument("--limit", type=int, default=50)
+    p_run.add_argument("--dry-run", action="store_true")
 
     p_test = sub.add_parser("test", help="Quick find_dental_practices smoke test")
     p_test.add_argument("--geo", default="Texas")
@@ -545,7 +775,10 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.cmd == "build_list":
-        build_target_list(args.client_email, limit=args.limit)
+        build_target_list(args.client_email, limit=args.limit, dry_run=args.dry_run)
+        return 0
+    if args.cmd == "run":
+        build_target_list(args.client_email, limit=args.limit, dry_run=args.dry_run)
         return 0
     if args.cmd == "test":
         rows = find_dental_practices(

@@ -216,6 +216,12 @@ def run_verify_payment(args: argparse.Namespace) -> None:
     print(result)
 
 
+def run_credit_stats(_args: argparse.Namespace) -> None:
+    from .credit_budget import print_credit_stats
+
+    print_credit_stats()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="DentalMeet lead pipeline")
     sub = parser.add_subparsers(dest="command")
@@ -301,6 +307,8 @@ def main() -> None:
         help="Build dental lists + send for clients with Workspace connected",
     )
 
+    sub.add_parser("credit-stats", help="Show Apollo credit budget usage this month")
+
     p_draft = sub.add_parser("draft_reply", help="Draft an AI reply for a lead question")
     p_draft.add_argument("email", help="Lead email (for context lookup)")
     p_draft.add_argument(
@@ -355,6 +363,10 @@ def main() -> None:
 
     if args.command == "verify_payment":
         run_verify_payment(args)
+        return
+
+    if args.command == "credit-stats":
+        run_credit_stats(args)
         return
 
     # Default / research

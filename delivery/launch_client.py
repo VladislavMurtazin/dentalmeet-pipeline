@@ -39,9 +39,25 @@ def _targets_path(client_email: str) -> Path:
 def workspace_connected(client_email: str) -> bool:
     """True if encrypted Workspace OAuth token exists for this client."""
     try:
+        from .connect_workspace import get_workspace_status
         from .token_store import token_path
 
+        status = get_workspace_status(client_email)
+        if status in ("declined", "fallback"):
+            return False
+        if status == "connected":
+            return token_path(client_email).exists()
         return token_path(client_email).exists()
+    except Exception:
+        return False
+
+
+def use_fallback_mode(client_email: str) -> bool:
+    """Plan B: send from DentalMeet accounts on client's behalf."""
+    try:
+        from .connect_workspace import get_workspace_status
+
+        return get_workspace_status(client_email) in ("declined", "fallback")
     except Exception:
         return False
 
@@ -175,8 +191,14 @@ def research_practices(client_email: str, limit: int = DEFAULT_RESEARCH_LIMIT) -
 def send_practice_emails(
     client_email: str,
     limit: int = DEFAULT_SEND_LIMIT,
+    *,
+    mode: str | None = None,
 ) -> dict:
-    """Send first-touch dental emails from the client's Workspace."""
+    """Send first-touch dental emails (Plan A: client Workspace, Plan B: fallback)."""
+    if mode == "fallback" or (mode is None and use_fallback_mode(client_email)):
+        from .send_as_fallback import run_campaign as run_fallback
+
+        return run_fallback(client_email, daily_limit=limit)
     from .send_as_client import run_campaign
 
     return run_campaign(client_email, daily_limit=limit)
@@ -190,6 +212,8 @@ def launch_client(
     research_limit: int = DEFAULT_RESEARCH_LIMIT,
     send_limit: int = DEFAULT_SEND_LIMIT,
     force_send: bool = False,
+    mode: str | None = None,
+    dry_run: bool = False,
 ) -> dict:
     """
     After form acceptance:
@@ -207,8 +231,19 @@ def launch_client(
         "errors": [],
     }
 
+    if dry_run or os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes"):
+        fallback = mode == "fallback" or use_fallback_mode(email)
+        plan = "fallback (Plan B)" if fallback or mode == "fallback" else "connected (Plan A)"
+        print(f"DRY RUN launch for {email}: mode={plan}")
+        print(f"  research_limit={research_limit} send_limit={send_limit}")
+        result["status"] = "dry_run"
+        result["mode"] = "fallback" if mode == "fallback" else plan
+        return result
+
     connected = workspace_connected(email)
+    fallback = mode == "fallback" or use_fallback_mode(email)
     result["workspace"] = connected
+    result["mode"] = "fallback" if fallback else ("connected" if connected else "pending")
 
     # Always try to build / refresh targets
     try:
@@ -231,7 +266,7 @@ def launch_client(
         result["status"] = "research_failed"
         return result
 
-    if not connected:
+    if not connected and not fallback:
         if send_connect_link:
             try:
                 from .connect_workspace import send_connect_instructions
@@ -249,9 +284,9 @@ def launch_client(
         result["status"] = "awaiting_workspace"
         return result
 
-    # Workspace ready → send
+    # Workspace connected OR Plan B fallback → send
     try:
-        summary = send_practice_emails(email, limit=send_limit)
+        summary = send_practice_emails(email, limit=send_limit, mode=mode)
         result["sent"] = int(summary.get("sent") or 0)
         result["send_summary"] = summary
         _update_client_status(
@@ -332,7 +367,7 @@ def process_pending_launches(
             "send_failed",
             "running",
             "",
-        ):
+        ) and not use_fallback_mode(email):
             stats["skipped"] += 1
             continue
 
@@ -373,16 +408,32 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("client_email")
     p.add_argument("--research-limit", type=int, default=DEFAULT_RESEARCH_LIMIT)
     p.add_argument("--send-limit", type=int, default=DEFAULT_SEND_LIMIT)
+    p.add_argument(
+        "--mode",
+        choices=["connected", "fallback"],
+        default=None,
+        help="Force Plan A (connected) or Plan B (fallback)",
+    )
+    p.add_argument("--dry-run", action="store_true")
+
+    p_run = sub.add_parser("run", help="Alias for launch")
+    p_run.add_argument("client_email")
+    p_run.add_argument("--research-limit", type=int, default=DEFAULT_RESEARCH_LIMIT)
+    p_run.add_argument("--send-limit", type=int, default=DEFAULT_SEND_LIMIT)
+    p_run.add_argument("--mode", choices=["connected", "fallback"], default=None)
+    p_run.add_argument("--dry-run", action="store_true")
 
     sub.add_parser("pending", help="Process all clients waiting to launch / send")
 
     args = parser.parse_args(argv)
-    if args.cmd == "launch":
+    if args.cmd in ("launch", "run"):
         out = launch_client(
             args.client_email,
             research_limit=args.research_limit,
             send_limit=args.send_limit,
-            force_send=True,
+            force_send=not getattr(args, "dry_run", False),
+            mode=getattr(args, "mode", None),
+            dry_run=getattr(args, "dry_run", False),
         )
         print(out)
         return 0 if not out.get("errors") else 1

@@ -805,7 +805,14 @@ def _enrich_pool(pool: list[dict], *, max_enrich: int) -> tuple[list[dict], int]
     Skips people already in data/enriched_leads.jsonl (idempotent).
     Local-saves each successful enrich before returning.
     """
+    from .credit_budget import agency_remaining, can_spend_agency, record_agency_credits
     from .enriched_store import already_enriched_locally, append_enriched_lead, load_local_index
+
+    remaining = agency_remaining()
+    if remaining <= 0 or not can_spend_agency(1):
+        _log("Agency search credit limit reached (1200)")
+        return [], 0
+    max_enrich = min(max(0, int(max_enrich)), remaining)
 
     local_idx = load_local_index()
     candidates: list[dict] = []
@@ -887,6 +894,8 @@ def _enrich_pool(pool: list[dict], *, max_enrich: int) -> tuple[list[dict], int]
 
         time.sleep(0.25)
 
+    if credits_spent:
+        record_agency_credits(credits_spent)
     return with_email, credits_spent
 
 
@@ -1288,6 +1297,22 @@ def _run_batch_enrich(
             new_added=0,
             duplicates_skipped=skipped_dup,
             last_seen_ids=[],  # batch must not pollute cron ID cache
+            enrichment="batch",
+            credits_spent=0,
+        )
+        return []
+
+    from .credit_budget import agency_remaining
+
+    n = min(n, agency_remaining())
+    if n <= 0:
+        _log("Agency search credit limit reached (1200)")
+        _save_run_state(
+            variants_run=len(variants),
+            total_hits=total_hits,
+            new_added=0,
+            duplicates_skipped=skipped_dup,
+            last_seen_ids=[],
             enrichment="batch",
             credits_spent=0,
         )

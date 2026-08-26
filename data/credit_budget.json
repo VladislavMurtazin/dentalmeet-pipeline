@@ -1,0 +1,15 @@
+{
+  "month": "2026-08",
+  "agency_search": {
+    "spent": 0,
+    "limit": 1200
+  },
+  "dental_enrichment": {
+    "spent": 0,
+    "limit": 1000,
+    "per_client_limit": 50,
+    "by_client": {}
+  },
+  "reserve": 300,
+  "total_available": 2500
+}

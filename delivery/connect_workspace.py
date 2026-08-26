@@ -135,6 +135,7 @@ def handle_oauth_callback(auth_code: str, state: str) -> dict:
         flow.fetch_token(code=auth_code)
         creds = flow.credentials
         save_encrypted(client_email, creds.to_json())
+        set_workspace_status(client_email, "connected")
         return {"ok": True, "client_email": client_email}
     except Exception as e:
         return {"ok": False, "error": str(e), "client_email": client_email}
@@ -201,6 +202,68 @@ def send_connect_instructions(client_email: str, client_name: str = "") -> bool:
     return send_email(client_email, subject, body)
 
 
+def set_workspace_status(client_email: str, status: str) -> None:
+    """Update workspace_status on Clients sheet."""
+    from pipeline.to_sheets import get_all_values_safe, update_cell_safe
+    from delivery.client_tracker import _clients_ws, _find_matches, ensure_tracker_columns
+
+    email = client_email.strip().lower()
+    ws = _clients_ws()
+    cols = ensure_tracker_columns(ws)
+    if "workspace_status" not in cols:
+        return
+    values = get_all_values_safe(ws)
+    hits = _find_matches(values, cols, email, "")
+    if not hits:
+        return
+    row_index, _ = hits[-1]
+    update_cell_safe(ws, row_index, cols["workspace_status"], status)
+
+
+def get_workspace_status(client_email: str) -> str:
+    """Return workspace_status from Clients (pending/connected/declined/fallback)."""
+    from pipeline.to_sheets import get_all_values_safe
+    from delivery.client_tracker import _clients_ws, _find_matches, ensure_tracker_columns
+
+    email = client_email.strip().lower()
+    ws = _clients_ws()
+    cols = ensure_tracker_columns(ws)
+    values = get_all_values_safe(ws)
+    hits = _find_matches(values, cols, email, "")
+    if not hits:
+        return "pending"
+    _, row = hits[-1]
+    idx = cols.get("workspace_status")
+    if idx is None or idx - 1 >= len(row):
+        return "pending"
+    return (row[idx - 1] or "pending").strip().lower() or "pending"
+
+
+def decline_workspace(client_email: str, client_name: str = "") -> bool:
+    """Client refused Workspace — switch to Plan B fallback mode."""
+    from pipeline.email_sender import send_email
+    from pipeline.to_sheets import is_email
+
+    email = client_email.strip().lower()
+    if not is_email(email):
+        return False
+    set_workspace_status(email, "fallback")
+    first = (client_name or "").strip().split()[0] or "there"
+    subject = "got it — we'll send on your behalf"
+    body = (
+        f"Hi {first},\n\n"
+        f"Got it! We'll send emails on your behalf from our accounts. "
+        f"You'll receive all replies forwarded to this inbox.\n\n"
+        f"No Google Workspace connection needed — your campaign can start "
+        f"as soon as we finish building your dental practice list.\n\n"
+        f"— Vladislav\n"
+        f"Founder, DentalMeet\n"
+    )
+    ok = send_email(email, subject, body)
+    print(f"workspace declined → fallback mode for {email}")
+    return ok
+
+
 def start_server(host: str = "127.0.0.1", port: int = 8000) -> None:
     """Run Flask callback server for OAuth redirects."""
     from flask import Flask, redirect, request
@@ -240,6 +303,10 @@ def main(argv: list[str] | None = None) -> int:
     p_link.add_argument("client_email")
     p_link.add_argument("--name", default="", help="Client first/full name")
 
+    p_decline = sub.add_parser("decline", help="Mark Workspace declined → Plan B fallback")
+    p_decline.add_argument("client_email")
+    p_decline.add_argument("--name", default="")
+
     p_url = sub.add_parser("url", help="Print OAuth URL only (no email)")
     p_url.add_argument("client_email")
     p_url.add_argument("--name", default="")
@@ -252,6 +319,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "send_link":
         ok = send_connect_instructions(args.client_email, args.name)
+        return 0 if ok else 1
+    if args.cmd == "decline":
+        ok = decline_workspace(args.client_email, args.name)
         return 0 if ok else 1
     if args.cmd == "url":
         print(generate_oauth_url(args.client_email, args.name))

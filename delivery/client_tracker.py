@@ -66,6 +66,11 @@ TRACKER_HEADERS = [
     "Payment TXID",
     "Payment Date",
     "Payment Amount",
+    "workspace_status",
+    "client_geo",
+    "dental_search_geo",
+    "geo_expanded",
+    "expand_geo",
 ]
 
 
@@ -309,6 +314,11 @@ def create_client_record(
         "Average Meetings per Engagement": _avg_meetings(prior_hits, cols),
         "Meetings": "0",
         "Payment Status": "unpaid" if is_repeat else "post_pay",
+        "workspace_status": "pending",
+        "client_geo": brief_data.get("Geo") or brief_data.get("geo") or "",
+        "dental_search_geo": brief_data.get("Geo") or brief_data.get("geo") or "",
+        "geo_expanded": "false",
+        "expand_geo": brief_data.get("expand_geo") or brief_data.get("Expand Geo") or "",
     }
 
     # Build row aligned to current headers
