@@ -78,23 +78,117 @@ DENTAL_INDUSTRIES = [
 ]
 
 MIN_GEO_RESULTS = 50
+EXPANSION_PER_STATE_LIMIT = 25
 
-# Neighboring areas for geo expansion (primary metro → nearby)
-GEO_EXPANSION_MAP: dict[str, list[str]] = {
-    "los angeles": ["Orange County, CA", "San Diego, CA", "Inland Empire, CA"],
-    "new york": ["New Jersey", "Connecticut", "Long Island, NY"],
-    "chicago": ["Illinois", "Indiana", "Wisconsin"],
-    "houston": ["Dallas, TX", "Austin, TX", "San Antonio, TX"],
-    "miami": ["Fort Lauderdale, FL", "West Palm Beach, FL", "Tampa, FL"],
-    "dallas": ["Fort Worth, TX", "Austin, TX", "Houston, TX"],
-    "phoenix": ["Scottsdale, AZ", "Tucson, AZ", "Las Vegas, NV"],
-    "philadelphia": ["New Jersey", "Delaware", "Baltimore, MD"],
-    "san francisco": ["San Jose, CA", "Oakland, CA", "Sacramento, CA"],
-    "seattle": ["Portland, OR", "Tacoma, WA", "Spokane, WA"],
-    "denver": ["Colorado Springs, CO", "Boulder, CO", "Fort Collins, CO"],
-    "atlanta": ["Charlotte, NC", "Nashville, TN", "Birmingham, AL"],
-    "boston": ["Rhode Island", "New Hampshire", "Connecticut"],
-    "austin": ["San Antonio, TX", "Houston, TX", "Dallas, TX"],
+# US state adjacency for geo expansion (all 50 states)
+STATE_NEIGHBORS: dict[str, list[str]] = {
+    "AL": ["MS", "TN", "GA", "FL"],
+    "AK": [],
+    "AZ": ["CA", "NV", "UT", "CO", "NM"],
+    "AR": ["TX", "OK", "MO", "TN", "MS", "LA"],
+    "CA": ["NV", "AZ", "OR"],
+    "CO": ["WY", "NE", "KS", "OK", "NM", "AZ", "UT"],
+    "CT": ["NY", "MA", "RI"],
+    "DE": ["MD", "PA", "NJ"],
+    "FL": ["GA", "AL"],
+    "GA": ["FL", "AL", "TN", "NC", "SC"],
+    "HI": [],
+    "ID": ["MT", "WY", "UT", "NV", "OR", "WA"],
+    "IL": ["WI", "IN", "KY", "MO", "IA"],
+    "IN": ["MI", "OH", "KY", "IL"],
+    "IA": ["MN", "WI", "IL", "MO", "NE", "SD"],
+    "KS": ["NE", "MO", "OK", "CO"],
+    "KY": ["IL", "IN", "OH", "WV", "VA", "TN", "MO"],
+    "LA": ["TX", "AR", "MS"],
+    "ME": ["NH"],
+    "MD": ["PA", "DE", "WV", "VA"],
+    "MA": ["NH", "VT", "NY", "CT", "RI"],
+    "MI": ["OH", "IN", "WI"],
+    "MN": ["WI", "IA", "SD", "ND"],
+    "MS": ["LA", "AR", "TN", "AL"],
+    "MO": ["IA", "IL", "KY", "TN", "AR", "OK", "KS", "NE"],
+    "MT": ["ND", "SD", "WY", "ID"],
+    "NE": ["SD", "IA", "MO", "KS", "CO", "WY"],
+    "NV": ["OR", "ID", "UT", "AZ", "CA"],
+    "NH": ["ME", "MA", "VT"],
+    "NJ": ["NY", "PA", "DE"],
+    "NM": ["AZ", "UT", "CO", "OK", "TX"],
+    "NY": ["VT", "MA", "CT", "NJ", "PA"],
+    "NC": ["SC", "GA", "TN", "VA"],
+    "ND": ["MT", "SD", "MN"],
+    "OH": ["PA", "WV", "KY", "IN", "MI"],
+    "OK": ["KS", "MO", "AR", "TX", "NM", "CO"],
+    "OR": ["WA", "ID", "NV", "CA"],
+    "PA": ["NY", "NJ", "DE", "MD", "WV", "OH"],
+    "RI": ["MA", "CT"],
+    "SC": ["GA", "NC"],
+    "SD": ["ND", "MN", "IA", "NE", "WY", "MT"],
+    "TN": ["KY", "VA", "NC", "GA", "AL", "MS", "AR", "MO"],
+    "TX": ["NM", "OK", "AR", "LA"],
+    "UT": ["ID", "WY", "CO", "NM", "AZ", "NV"],
+    "VT": ["NY", "NH", "MA"],
+    "VA": ["NC", "TN", "KY", "WV", "MD"],
+    "WA": ["ID", "OR"],
+    "WV": ["OH", "PA", "MD", "VA", "KY"],
+    "WI": ["MI", "MN", "IA", "IL"],
+    "WY": ["MT", "SD", "NE", "CO", "UT", "ID"],
+}
+
+STATE_NAMES: dict[str, str] = {
+    "AL": "Alabama",
+    "AK": "Alaska",
+    "AZ": "Arizona",
+    "AR": "Arkansas",
+    "CA": "California",
+    "CO": "Colorado",
+    "CT": "Connecticut",
+    "DE": "Delaware",
+    "FL": "Florida",
+    "GA": "Georgia",
+    "HI": "Hawaii",
+    "ID": "Idaho",
+    "IL": "Illinois",
+    "IN": "Indiana",
+    "IA": "Iowa",
+    "KS": "Kansas",
+    "KY": "Kentucky",
+    "LA": "Louisiana",
+    "ME": "Maine",
+    "MD": "Maryland",
+    "MA": "Massachusetts",
+    "MI": "Michigan",
+    "MN": "Minnesota",
+    "MS": "Mississippi",
+    "MO": "Missouri",
+    "MT": "Montana",
+    "NE": "Nebraska",
+    "NV": "Nevada",
+    "NH": "New Hampshire",
+    "NJ": "New Jersey",
+    "NM": "New Mexico",
+    "NY": "New York",
+    "NC": "North Carolina",
+    "ND": "North Dakota",
+    "OH": "Ohio",
+    "OK": "Oklahoma",
+    "OR": "Oregon",
+    "PA": "Pennsylvania",
+    "RI": "Rhode Island",
+    "SC": "South Carolina",
+    "SD": "South Dakota",
+    "TN": "Tennessee",
+    "TX": "Texas",
+    "UT": "Utah",
+    "VT": "Vermont",
+    "VA": "Virginia",
+    "WA": "Washington",
+    "WV": "West Virginia",
+    "WI": "Wisconsin",
+    "WY": "Wyoming",
+}
+
+STATE_NAME_TO_CODE: dict[str, str] = {
+    name.lower(): code for code, name in STATE_NAMES.items()
 }
 
 # ~100 calls/min ⇒ sleep 0.65s between calls
@@ -150,7 +244,7 @@ def _locations_from_icp(icp: dict) -> list[str]:
         or icp.get("geo")
         or "United States"
     ).strip()
-    locations = [g.strip() for g in geo.replace(";", ",").split(",") if g.strip()]
+    locations = _split_geo_segments(geo)
     if not locations:
         locations = ["United States"]
     if any(x.lower() in ("nationwide", "usa", "us", "united states") for x in locations):
@@ -158,19 +252,61 @@ def _locations_from_icp(icp: dict) -> list[str]:
     return locations
 
 
-def _normalize_geo_key(geo: str) -> str:
-    return " ".join((geo or "").lower().replace(",", " ").split())
+def _split_geo_segments(geo: str) -> list[str]:
+    """Split multi-location geo on semicolons (preserves 'City, ST' commas)."""
+    return [g.strip() for g in (geo or "").split(";") if g.strip()]
 
 
 def _primary_geo(icp: dict) -> str:
     geo = (icp.get("client_geo") or icp.get("geographic_target") or icp.get("geo") or "").strip()
     if not geo:
         return "United States"
-    parts = [g.strip() for g in geo.replace(";", ",").split(",") if g.strip()]
-    return parts[0] if parts else geo
+    segments = _split_geo_segments(geo)
+    return segments[0] if segments else geo
+
+
+def _parse_state_code(geo: str) -> str | None:
+    """Extract 2-letter US state code from geo string (e.g. 'Los Angeles, CA' → 'CA')."""
+    geo = (geo or "").strip()
+    if not geo:
+        return None
+    parts = [p.strip() for p in geo.replace(";", ",").split(",") if p.strip()]
+    if len(parts) >= 2:
+        candidate = parts[-1].upper()
+        if len(candidate) == 2 and candidate in STATE_NEIGHBORS:
+            return candidate
+    # Whole string might be a state name or code
+    lower = geo.lower()
+    if lower in STATE_NAME_TO_CODE:
+        return STATE_NAME_TO_CODE[lower]
+    upper = geo.upper()
+    if len(upper) == 2 and upper in STATE_NEIGHBORS:
+        return upper
+    for name, code in STATE_NAME_TO_CODE.items():
+        if name in lower:
+            return code
+    return None
+
+
+def _neighbor_states(primary_geo: str) -> list[str]:
+    """Return neighboring state codes for client's state."""
+    code = _parse_state_code(primary_geo)
+    if not code:
+        return []
+    return list(STATE_NEIGHBORS.get(code, []))
+
+
+def _state_search_label(state_code: str) -> str:
+    return STATE_NAMES.get(state_code.upper(), state_code)
+
+
+def _format_expanded_geo(state_codes: list[str]) -> str:
+    return ", ".join(_state_search_label(c) for c in state_codes)
 
 
 def _expand_geo_enabled(icp: dict) -> bool:
+    if icp.get("force_expand_geo"):
+        return True
     raw = icp.get("expand_geo")
     if isinstance(raw, bool):
         return raw
@@ -178,23 +314,10 @@ def _expand_geo_enabled(icp: dict) -> bool:
     return "expand_geo" in text or "expand geo" in text
 
 
-def _suggest_geo_expansion(primary_geo: str) -> list[str]:
-    key = _normalize_geo_key(primary_geo)
-    for metro, neighbors in GEO_EXPANSION_MAP.items():
-        if metro in key:
-            return neighbors
-    # Generic: append state-level if city, state present
-    if "," in primary_geo:
-        state = primary_geo.split(",")[-1].strip()
-        if state and len(state) <= 3:
-            return [state, "United States"]
-    return []
-
-
-def _build_search_keywords(icp: dict) -> list[str]:
-    """Combine each DENTAL_SEARCH_VARIANT with client geo."""
-    primary = _primary_geo(icp)
-    geo_suffix = primary.replace(",", "").strip()
+def _build_search_keywords(icp: dict, *, geo: str | None = None) -> list[str]:
+    """Combine each DENTAL_SEARCH_VARIANT with search geo."""
+    location = (geo or _primary_geo(icp)).strip()
+    geo_suffix = location.replace(",", "").strip()
     return [f"{variant} {geo_suffix}".strip() for variant in DENTAL_SEARCH_VARIANTS]
 
 
@@ -202,8 +325,9 @@ def _save_client_geo_info(
     client_email: str,
     *,
     client_geo: str,
-    search_geo: str,
-    geo_expanded: bool,
+    search_geo_primary: str,
+    search_geo_expanded: str,
+    geo_was_expanded: bool,
 ) -> None:
     from pipeline.to_sheets import get_all_values_safe, update_cell_safe
     from delivery.client_tracker import _clients_ws, _find_matches, ensure_tracker_columns
@@ -215,10 +339,16 @@ def _save_client_geo_info(
     if not hits:
         return
     row_index, _ = hits[-1]
+    combined_search = search_geo_primary
+    if search_geo_expanded:
+        combined_search = f"{search_geo_primary}; {search_geo_expanded}"
     for field, val in (
         ("client_geo", client_geo),
-        ("dental_search_geo", search_geo),
-        ("geo_expanded", "true" if geo_expanded else "false"),
+        ("search_geo_primary", search_geo_primary),
+        ("search_geo_expanded", search_geo_expanded),
+        ("geo_was_expanded", "true" if geo_was_expanded else "false"),
+        ("dental_search_geo", combined_search),
+        ("geo_expanded", "true" if geo_was_expanded else "false"),
     ):
         if field in cols:
             update_cell_safe(ws, row_index, cols[field], val)
@@ -256,6 +386,9 @@ def load_client_icp(client_email: str) -> dict:
                 "geographic_target": get(row, "Geo"),
                 "client_geo": get(row, "client_geo") or get(row, "Geo"),
                 "dental_search_geo": get(row, "dental_search_geo") or get(row, "Geo"),
+                "search_geo_primary": get(row, "search_geo_primary") or get(row, "Geo"),
+                "search_geo_expanded": get(row, "search_geo_expanded"),
+                "geo_was_expanded": get(row, "geo_was_expanded") or get(row, "geo_expanded"),
                 "geo_expanded": get(row, "geo_expanded"),
                 "expand_geo": get(row, "expand_geo"),
                 "services_needed": get(row, "Services"),
@@ -324,6 +457,7 @@ def _normalize_person(raw: dict) -> dict | None:
         "id": raw.get("id"),
         "opener": "",
         "signal": "",
+        "geo_expanded": bool(raw.get("_geo_expanded") or raw.get("geo_expanded")),
     }
 
 
@@ -349,10 +483,17 @@ def _match_person_by_id(person_id: str) -> dict | None:
     return data.get("person") or data.get("match")
 
 
-def _api_search_pages(icp: dict, limit: int) -> list[dict]:
-    """Search all keyword variants with Apollo filters (verified emails only)."""
-    locations = _locations_from_icp(icp)
-    keywords_list = _build_search_keywords(icp)
+def _api_search_pages(
+    icp: dict,
+    limit: int,
+    *,
+    locations: list[str] | None = None,
+    keyword_geo: str | None = None,
+    geo_expanded: bool = False,
+) -> list[dict]:
+    """Search keyword variants with Apollo filters (verified emails only)."""
+    locs = locations or _locations_from_icp(icp)
+    keywords_list = _build_search_keywords(icp, geo=keyword_geo)
     per_variant = max(2, limit // max(len(keywords_list), 1))
 
     people: list[dict] = []
@@ -368,7 +509,7 @@ def _api_search_pages(icp: dict, limit: int) -> list[dict]:
             payload = {
                 "q_keywords": keywords,
                 "person_titles": DECISION_TITLES,
-                "organization_locations": locations,
+                "organization_locations": locs,
                 "q_organization_keyword_tags": DENTAL_INDUSTRIES,
                 "organization_num_employees_ranges": ["1-10", "11-50", "51-200"],
                 "email_status": ["verified"],
@@ -395,19 +536,65 @@ def _api_search_pages(icp: dict, limit: int) -> list[dict]:
                     continue
                 if pid:
                     seen_ids.add(pid)
+                if geo_expanded:
+                    p = dict(p)
+                    p["_geo_expanded"] = True
                 people.append(p)
                 added += 1
                 if len(people) >= limit:
                     break
             print(
                 f"Apollo [{keywords[:40]}…]: +{added} "
-                f"(total {len(people)}) loc={locations}"
+                f"(total {len(people)}) loc={locs}"
             )
             if len(batch) < per_page:
                 break
             page += 1
 
     return people[:limit]
+
+
+def _expand_to_neighbor_states(
+    icp: dict,
+    *,
+    primary_geo: str,
+    existing: list[dict],
+    seen_ids: set[str],
+) -> tuple[list[dict], list[str], int]:
+    """Search neighboring states (25 results each) and merge with primary hits."""
+    neighbors = _neighbor_states(primary_geo)
+    if not neighbors:
+        print(f"No neighboring states mapped for {primary_geo!r}")
+        return existing, [], 0
+
+    expanded_people = list(existing)
+    used_states: list[str] = []
+    before = len(expanded_people)
+
+    for state_code in neighbors:
+        state_label = _state_search_label(state_code)
+        batch = _api_search_pages(
+            icp,
+            limit=EXPANSION_PER_STATE_LIMIT,
+            locations=[state_label],
+            keyword_geo=state_label,
+            geo_expanded=True,
+        )
+        added_here = 0
+        for p in batch:
+            pid = str(p.get("id") or "")
+            if pid and pid in seen_ids:
+                continue
+            if pid:
+                seen_ids.add(pid)
+            expanded_people.append(p)
+            added_here += 1
+        if added_here:
+            used_states.append(state_code)
+        print(f"  neighbor {state_code}: +{added_here} practices")
+
+    added_total = len(expanded_people) - before
+    return expanded_people, used_states, added_total
 
 
 def _contacts_search_fallback(icp: dict, limit: int) -> list[dict]:
@@ -454,6 +641,9 @@ def find_dental_practices(icp: dict, limit: int = 500) -> list[dict]:
     """
     Find dental decision-makers via 25 keyword variants + geo.
 
+    Searches primary client geo first. If fewer than MIN_GEO_RESULTS hits,
+    expands to neighboring US states (25 results per state).
+
     Plan without bulk_match: reveal emails with people/match per id.
     Respects dental enrichment credit budget.
     """
@@ -464,31 +654,46 @@ def find_dental_practices(icp: dict, limit: int = 500) -> list[dict]:
     icp = dict(icp)
     icp.setdefault("client_geo", primary_geo)
     icp.setdefault("dental_search_geo", primary_geo)
+    icp.setdefault("geographic_target", primary_geo)
 
     search_limit = max(limit * 3, 25)
-    raw_people = _api_search_pages(icp, limit=search_limit)
-    geo_expanded = False
+    raw_people = _api_search_pages(
+        icp,
+        limit=search_limit,
+        locations=[primary_geo],
+        keyword_geo=primary_geo,
+    )
+    primary_count = len(raw_people)
+    geo_was_expanded = False
+    search_geo_expanded = ""
+    seen_ids = {str(p.get("id") or "") for p in raw_people if p.get("id")}
 
-    if len(raw_people) < MIN_GEO_RESULTS:
-        suggestions = _suggest_geo_expansion(primary_geo)
+    should_expand = primary_count < MIN_GEO_RESULTS
+    if should_expand:
+        city_label = primary_geo.split(",")[0].strip() if "," in primary_geo else primary_geo
         print(
-            f"Found {len(raw_people)} practices in {primary_geo}. "
-            f"Expand to {', '.join(suggestions[:2]) or 'neighboring areas'}?"
+            f"Found only {primary_count} in {city_label or primary_geo}. "
+            f"Expanding to neighboring areas."
         )
-        if _expand_geo_enabled(icp) and suggestions:
-            expanded_geo = f"{primary_geo}; " + "; ".join(suggestions[:3])
-            icp["dental_search_geo"] = expanded_geo
-            icp["geographic_target"] = expanded_geo
-            geo_expanded = True
-            print(f"Geo expansion enabled → searching {expanded_geo}")
-            raw_people = _api_search_pages(icp, limit=search_limit)
+        raw_people, used_states, added = _expand_to_neighbor_states(
+            icp,
+            primary_geo=primary_geo,
+            existing=raw_people,
+            seen_ids=seen_ids,
+        )
+        if used_states:
+            geo_was_expanded = True
+            search_geo_expanded = _format_expanded_geo(used_states)
+            codes = ", ".join(used_states)
+            print(f"Expansion added {added} practices from {codes}")
 
     if client_email:
         _save_client_geo_info(
             client_email,
             client_geo=primary_geo,
-            search_geo=icp.get("dental_search_geo") or primary_geo,
-            geo_expanded=geo_expanded,
+            search_geo_primary=primary_geo,
+            search_geo_expanded=search_geo_expanded,
+            geo_was_expanded=geo_was_expanded,
         )
 
     raw_people.sort(key=lambda p: (0 if p.get("has_email") else 1))
@@ -524,6 +729,8 @@ def find_dental_practices(icp: dict, limit: int = 500) -> list[dict]:
 
         matched = _match_person_by_id(p["id"])
         if matched:
+            if p.get("_geo_expanded"):
+                matched["_geo_expanded"] = True
             record_dental_credits(1, client_email or None)
         if not matched:
             skipped_missing += 1
@@ -654,7 +861,13 @@ def enrich_practice(practice: dict) -> dict:
     return practice
 
 
-def build_target_list(client_email: str, limit: int = 500, *, dry_run: bool = False) -> list[dict]:
+def build_target_list(
+    client_email: str,
+    limit: int = 500,
+    *,
+    dry_run: bool = False,
+    expand_geo: bool = False,
+) -> list[dict]:
     """ICP → Apollo (api_search + match) → CSV under targets/."""
     if dry_run:
         try:
@@ -664,13 +877,23 @@ def build_target_list(client_email: str, limit: int = 500, *, dry_run: bool = Fa
                 "client_email": client_email,
                 "geo": "Los Angeles, CA",
                 "client_geo": "Los Angeles, CA",
-                "expand_geo": True,
             }
+        if expand_geo:
+            icp["force_expand_geo"] = True
         keywords = _build_search_keywords(icp)
         primary = _primary_geo(icp)
+        neighbors = _neighbor_states(primary)
         print(f"DRY RUN dental search for {client_email}")
         print(f"  client_geo: {primary}")
-        print(f"  expand_geo: {_expand_geo_enabled(icp)}")
+        print(f"  search_geo_primary: {primary}")
+        print(f"  expansion threshold: {MIN_GEO_RESULTS} practices")
+        if neighbors:
+            print(
+                f"  neighbor states if < {MIN_GEO_RESULTS}: "
+                f"{', '.join(neighbors)} ({_format_expanded_geo(neighbors)})"
+            )
+            print(f"  per-state limit: {EXPANSION_PER_STATE_LIMIT}")
+        print(f"  force_expand_geo: {expand_geo or _expand_geo_enabled(icp)}")
         print(f"  variants: {len(keywords)} keyword combinations")
         print("  sample queries:")
         for q in keywords[:5]:
@@ -682,6 +905,8 @@ def build_target_list(client_email: str, limit: int = 500, *, dry_run: bool = Fa
 
     TARGETS_DIR.mkdir(parents=True, exist_ok=True)
     icp = load_client_icp(client_email)
+    if expand_geo:
+        icp["force_expand_geo"] = True
     practices = find_dental_practices(icp, limit=limit)
     if not practices:
         safe = client_email.strip().lower().replace("@", "_at_")
@@ -722,6 +947,7 @@ def build_target_list(client_email: str, limit: int = 500, *, dry_run: bool = Fa
         "city",
         "state",
         "verified_email",
+        "geo_expanded",
         "opener",
         "signal",
     ]
@@ -744,6 +970,7 @@ def build_target_list(client_email: str, limit: int = 500, *, dry_run: bool = Fa
                     "city": p.get("city", ""),
                     "state": p.get("state", ""),
                     "verified_email": p.get("verified_email", p.get("verified", "")),
+                    "geo_expanded": p.get("geo_expanded", ""),
                     "opener": p.get("opener", ""),
                     "signal": p.get("signal", ""),
                 }
@@ -760,11 +987,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("client_email")
     p.add_argument("--limit", type=int, default=50, help="Max practices (default 50)")
     p.add_argument("--dry-run", action="store_true", help="Print search plan only")
+    p.add_argument(
+        "--expand-geo",
+        action="store_true",
+        help="Opt in to neighbor-state expansion (auto when < 50 results)",
+    )
 
     p_run = sub.add_parser("run", help="Alias for build_list")
     p_run.add_argument("client_email")
     p_run.add_argument("--limit", type=int, default=50)
     p_run.add_argument("--dry-run", action="store_true")
+    p_run.add_argument("--expand-geo", action="store_true")
 
     p_test = sub.add_parser("test", help="Quick find_dental_practices smoke test")
     p_test.add_argument("--geo", default="Texas")
@@ -775,10 +1008,20 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.cmd == "build_list":
-        build_target_list(args.client_email, limit=args.limit, dry_run=args.dry_run)
+        build_target_list(
+            args.client_email,
+            limit=args.limit,
+            dry_run=args.dry_run,
+            expand_geo=args.expand_geo,
+        )
         return 0
     if args.cmd == "run":
-        build_target_list(args.client_email, limit=args.limit, dry_run=args.dry_run)
+        build_target_list(
+            args.client_email,
+            limit=args.limit,
+            dry_run=args.dry_run,
+            expand_geo=args.expand_geo,
+        )
         return 0
     if args.cmd == "test":
         rows = find_dental_practices(

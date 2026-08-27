@@ -71,6 +71,9 @@ TRACKER_HEADERS = [
     "dental_search_geo",
     "geo_expanded",
     "expand_geo",
+    "search_geo_primary",
+    "search_geo_expanded",
+    "geo_was_expanded",
 ]
 
 
@@ -319,6 +322,9 @@ def create_client_record(
         "dental_search_geo": brief_data.get("Geo") or brief_data.get("geo") or "",
         "geo_expanded": "false",
         "expand_geo": brief_data.get("expand_geo") or brief_data.get("Expand Geo") or "",
+        "search_geo_primary": brief_data.get("Geo") or brief_data.get("geo") or "",
+        "search_geo_expanded": "",
+        "geo_was_expanded": "false",
     }
 
     # Build row aligned to current headers
