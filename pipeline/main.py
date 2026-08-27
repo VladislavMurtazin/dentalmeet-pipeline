@@ -15,6 +15,7 @@
   python -m pipeline.main daily_summary [--force]
   python -m pipeline.main alert-test [--times 3]
   python -m pipeline.main deliverability [--record inbox|spam]
+  python -m pipeline.main bounce scan|cleanup|stats|record|test EMAIL
 """
 
 from __future__ import annotations
@@ -251,6 +252,34 @@ def run_deliverability(_args: argparse.Namespace) -> None:
     print(json.dumps(result, ensure_ascii=False), flush=True)
 
 
+def run_bounce(_args: argparse.Namespace) -> None:
+    from .bounce_handler import (
+        mark_bounced_leads_in_sheet,
+        print_bounce_stats,
+        record_bounced_email,
+        scan_all_bounces,
+        simulate_bounce,
+    )
+
+    cmd = getattr(_args, "bounce_cmd", "stats")
+    if cmd == "scan":
+        result = scan_all_bounces(days=getattr(_args, "days", 7))
+        print(json.dumps(result, ensure_ascii=False), flush=True)
+    elif cmd == "cleanup":
+        result = mark_bounced_leads_in_sheet()
+        print(json.dumps(result, ensure_ascii=False), flush=True)
+    elif cmd == "stats":
+        print_bounce_stats()
+    elif cmd == "record":
+        ok = record_bounced_email(_args.email, source="manual")
+        print(json.dumps({"recorded": ok, "email": _args.email}), flush=True)
+    elif cmd == "test":
+        ok = simulate_bounce(_args.email)
+        print(json.dumps({"recorded": ok, "email": _args.email}), flush=True)
+    else:
+        print(f"unknown bounce command: {cmd}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="DentalMeet lead pipeline")
     sub = parser.add_subparsers(dest="command")
@@ -353,6 +382,17 @@ def main() -> None:
     )
     p_deliv.add_argument("--no-imap", action="store_true", help="Send only; skip IMAP check")
 
+    p_bounce = sub.add_parser("bounce", help="Bounce scan, cleanup, and stats")
+    bounce_sub = p_bounce.add_subparsers(dest="bounce_cmd", required=True)
+    p_b_scan = bounce_sub.add_parser("scan", help="Scan IMAP for bounce notifications")
+    p_b_scan.add_argument("--days", type=int, default=7)
+    bounce_sub.add_parser("cleanup", help="Mark bounced leads in Agencies sheet")
+    bounce_sub.add_parser("stats", help="Print weekly bounce rate stats")
+    p_b_rec = bounce_sub.add_parser("record", help="Manually record a bounced email")
+    p_b_rec.add_argument("email")
+    p_b_test = bounce_sub.add_parser("test", help="Simulate bounce for testing")
+    p_b_test.add_argument("email")
+
     p_draft = sub.add_parser("draft_reply", help="Draft an AI reply for a lead question")
     p_draft.add_argument("email", help="Lead email (for context lookup)")
     p_draft.add_argument(
@@ -425,6 +465,10 @@ def main() -> None:
 
     if args.command == "deliverability":
         run_monitored("deliverability", run_deliverability, args)
+        return
+
+    if args.command == "bounce":
+        run_bounce(args)
         return
 
     # Default / research

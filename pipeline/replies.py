@@ -239,11 +239,15 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
 
         body = reply.get("body") or reply.get("body_preview") or ""
         if _is_bounce_notification_from_text(addr, reply.get("subject", ""), body):
-            from .alerts import record_bounce
+            from .bounce_handler import extract_bounced_recipient, record_bounced_email
 
-            record_bounce(1)
+            recipient = extract_bounced_recipient(
+                addr, reply.get("subject", ""), body
+            ) or addr
+            if record_bounced_email(recipient, source="gmail_replies"):
+                pass
             skipped.append(addr)
-            print(f"bounce detected: {addr}")
+            print(f"bounce detected: {recipient}")
             continue
 
         if is_suppressed(addr):

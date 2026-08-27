@@ -36,6 +36,8 @@ def _first_name(contact: str) -> str:
 
 def get_unsent_leads() -> list[dict]:
     """Leads with valid email, empty Sent, Verified in {yes, manual}."""
+    from .bounce_handler import check_recipient_sendable
+
     ws = get_worksheet_safe("Agencies")
     values = get_all_values_safe(ws)
     leads: list[dict] = []
@@ -52,6 +54,10 @@ def get_unsent_leads() -> list[dict]:
         sent = fields["Sent"].strip()
 
         if not is_email(email):
+            continue
+        sendable, skip_reason = check_recipient_sendable(email)
+        if not sendable:
+            print(skip_reason)
             continue
         if sent:
             continue
@@ -121,6 +127,7 @@ def run_first_touch(limit: int = 5) -> dict:
 
     Scrapes website signals lazily — only for this send batch.
     """
+    from .bounce_handler import scan_all_bounces
     from .personalize import ensure_signals_for_leads
 
     limit = max(1, min(int(limit), MAX_PER_RUN))
@@ -182,5 +189,12 @@ def run_first_touch(limit: int = 5) -> dict:
                     print(f"mark_sent failed row {row_index}: {e}")
 
     print(f"summary: sent {len(result['sent'])}, failed {len(result['failed'])}")
+    skipped = result.get("skipped_bounce") or []
+    if skipped:
+        print(f"skipped (bounced/blocked): {len(skipped)}")
     print_template_stats()
+    try:
+        scan_all_bounces(days=7)
+    except Exception as e:
+        print(f"bounce scan after send skipped: {e}")
     return result

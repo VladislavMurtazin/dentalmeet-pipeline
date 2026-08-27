@@ -1066,6 +1066,12 @@ def process_warmup_inbox() -> dict:
     schedule["last_process"] = _iso_now()
     save_schedule(schedule)
     print(f"warmup process done: {total} replies total this run")
+    try:
+        from .bounce_handler import scan_all_bounces
+
+        scan_all_bounces(days=7)
+    except Exception as e:
+        print(f"bounce scan after warmup process skipped: {e}")
     return {"replies": total}
 
 
@@ -1132,6 +1138,12 @@ def show_stats() -> None:
     print(f"Last process: {_format_ts(schedule.get('last_process'))}")
     print(f"Next warmup: {_next_warmup_label(schedule.get('last_send'))}")
     print(f"Status: {_status_label(day)}")
+    try:
+        from .bounce_handler import print_bounce_stats
+
+        print_bounce_stats()
+    except Exception as e:
+        print(f"bounce stats unavailable: {e}")
     print("====================")
 
 

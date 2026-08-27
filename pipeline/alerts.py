@@ -361,6 +361,8 @@ def run_health_checks_for_job(job_name: str) -> None:
 
 
 def build_daily_summary() -> str:
+    from .bounce_handler import weekly_bounce_stats
+
     data = load_daily_metrics()
     today = data.get(_today_key(), {})
     emails = int(today.get("emails_sent") or 0)
@@ -368,9 +370,15 @@ def build_daily_summary() -> str:
     interested = int(today.get("interested") or 0)
     warmup = int(today.get("warmup_emails") or 0)
     credits = apollo_credits_remaining()
+    bounce = weekly_bounce_stats()
+    bounce_line = (
+        f"Bounce rate this week: {bounce['rate'] * 100:.1f}% "
+        f"(target: <{bounce['target'] * 100:.0f}%)"
+    )
     return (
         f"Today: {emails} emails sent, {replies} replies, {interested} interested. "
         f"Warmup: {warmup} emails.\n\n"
+        f"{bounce_line}\n"
         f"Apollo credits remaining: {credits}"
     )
 

@@ -259,6 +259,13 @@ def send_email(
         print("send_email error: empty recipient")
         return False
 
+    from .bounce_handler import check_recipient_sendable
+
+    sendable, skip_reason = check_recipient_sendable(to)
+    if not sendable:
+        print(skip_reason)
+        return False
+
     accounts = load_smtp_accounts()
     if not accounts:
         print(
@@ -391,8 +398,17 @@ def send_batch(
             f"(got {len(recipients)}, rest skipped this run)"
         )
 
+    skipped_bounce: list[dict] = []
+    from .bounce_handler import check_recipient_sendable
+
     for i, item in enumerate(batch):
         to = (item.get("to") or "").strip()
+        sendable, skip_reason = check_recipient_sendable(to)
+        if not sendable:
+            skipped_bounce.append({**item, "skip_reason": skip_reason})
+            print(f"[{i + 1}/{len(batch)}] {skip_reason}")
+            continue
+
         subject = item.get("subject") or ""
         body = item.get("body") or ""
 
@@ -418,4 +434,4 @@ def send_batch(
                 print(f"sleeping {delay}s before next send…")
                 time.sleep(delay)
 
-    return {"sent": sent, "failed": failed}
+    return {"sent": sent, "failed": failed, "skipped_bounce": skipped_bounce}

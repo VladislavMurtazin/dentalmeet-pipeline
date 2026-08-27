@@ -10,6 +10,7 @@ on:
     - cron: "0 */2 * * *"    # check_forms — every 2 hours
     - cron: "30 */2 * * *"   # launch_pending — every 2 hours (:30)
     - cron: "0 9 * * 1"      # weekly reports — Monday 09:00 UTC
+    - cron: "30 9 * * 1"     # bounce_cleanup — Monday 09:30 UTC
     - cron: "15 9 * * *"     # pilot invoices — daily 09:15 UTC (3 weeks after start)
     - cron: "0 10 * * *"     # payment check — daily 10:00 UTC
     - cron: "0 */4 * * *"    # warmup_send — every 4 hours
@@ -37,6 +38,7 @@ on:
           - warmup_process
           - warmup_stats
           - daily_summary
+          - bounce_cleanup
           - all
 
 # Shared secrets for all jobs (per-job env can still override / extend).
@@ -831,3 +833,58 @@ jobs:
             data/alert_state.json
             data/failure_log.json
           key: alert-metrics-${{ github.repository }}-${{ github.run_id }}
+
+  bounce_cleanup:
+    name: bounce_cleanup
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '30 9 * * 1') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.job == 'bounce_cleanup' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore bounce data
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/bounced_emails.json
+            data/blocked_domains.json
+          key: bounce-data-${{ github.repository }}
+
+      - name: Scan bounces and mark sheet
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          python -m pipeline.main bounce scan
+          python -m pipeline.main bounce cleanup
+          python -m pipeline.main bounce stats
+        env:
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
+          SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
+          SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+
+      - name: Persist bounce data
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/bounced_emails.json
+            data/blocked_domains.json
+          key: bounce-data-${{ github.repository }}-${{ github.run_id }}
