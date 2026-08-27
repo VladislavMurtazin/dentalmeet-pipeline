@@ -11,3 +11,4 @@ flask
 cryptography
 python-whois
 fpdf2
+tzdata

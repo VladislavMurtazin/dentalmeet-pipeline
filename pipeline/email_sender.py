@@ -399,6 +399,7 @@ def send_batch(
         )
 
     skipped_bounce: list[dict] = []
+    skipped_timezone: list[dict] = []
     from .bounce_handler import check_recipient_sendable
 
     for i, item in enumerate(batch):
@@ -408,6 +409,17 @@ def send_batch(
             skipped_bounce.append({**item, "skip_reason": skip_reason})
             print(f"[{i + 1}/{len(batch)}] {skip_reason}")
             continue
+
+        tz_name = item.get("timezone")
+        if tz_name:
+            from .timezone_utils import can_send_now, format_local_datetime_safe, next_send_datetime
+
+            if not can_send_now(tz_name):
+                send_after = next_send_datetime(tz_name)
+                when = format_local_datetime_safe(send_after, tz_name)
+                skipped_timezone.append({**item, "skip_reason": f"outside send window → {when}"})
+                print(f"[{i + 1}/{len(batch)}] skipped {to} (outside send window → {when})")
+                continue
 
         subject = item.get("subject") or ""
         body = item.get("body") or ""
@@ -434,4 +446,4 @@ def send_batch(
                 print(f"sleeping {delay}s before next send…")
                 time.sleep(delay)
 
-    return {"sent": sent, "failed": failed, "skipped_bounce": skipped_bounce}
+    return {"sent": sent, "failed": failed, "skipped_bounce": skipped_bounce, "skipped_timezone": skipped_timezone}

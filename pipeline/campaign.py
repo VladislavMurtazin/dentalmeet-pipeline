@@ -22,9 +22,10 @@ def _dry_run() -> bool:
     return os.environ.get("DRY_RUN", "").strip().lower() in ("1", "true", "yes")
 
 
-def _pad(row: list[str], n: int = 12) -> list[str]:
-    out = list(row) + [""] * n
-    return out[:n]
+def _pad(row: list[str], n: int | None = None) -> list[str]:
+    width = n if n is not None else len(HEADERS)
+    out = list(row) + [""] * width
+    return out[:width]
 
 
 def _first_name(contact: str) -> str:
@@ -161,10 +162,31 @@ def run_first_touch(limit: int = 5) -> dict:
                 "row_index": lead["row_index"],
                 "Notes": lead.get("Notes", ""),
                 "template_id": template_id,
+                "lead": lead,
             }
         )
 
-    result = send_batch(recipients)
+    from .send_queue import process_queue, queue_recipients, split_by_send_window
+
+    queue_result = process_queue(limit)
+    remaining = max(0, limit - len(queue_result.get("sent") or []))
+
+    ready, to_queue = split_by_send_window(recipients)
+    if to_queue:
+        queued_count = queue_recipients(to_queue)
+        print(f"timezone queue: {queued_count} deferred (outside 8-18 local / weekend)")
+    recipients_to_send = ready[:remaining]
+
+    result = send_batch(recipients_to_send, max_per_run=remaining or limit)
+    sent_all = list(queue_result.get("sent") or []) + list(result.get("sent") or [])
+    failed_all = list(queue_result.get("failed") or []) + list(result.get("failed") or [])
+    result = {
+        **result,
+        "sent": sent_all,
+        "failed": failed_all,
+        "queued": len(to_queue),
+        "queue_processed": len(queue_result.get("sent") or []),
+    }
     today = date.today().isoformat()
 
     from .alerts import record_send_batch
@@ -189,6 +211,10 @@ def run_first_touch(limit: int = 5) -> dict:
                     print(f"mark_sent failed row {row_index}: {e}")
 
     print(f"summary: sent {len(result['sent'])}, failed {len(result['failed'])}")
+    if result.get("queued"):
+        print(f"queued for later: {result['queued']}")
+    if result.get("queue_processed"):
+        print(f"sent from queue: {result['queue_processed']}")
     skipped = result.get("skipped_bounce") or []
     if skipped:
         print(f"skipped (bounced/blocked): {len(skipped)}")

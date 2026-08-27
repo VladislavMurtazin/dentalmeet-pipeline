@@ -21,6 +21,7 @@ data/deliverability_state.json
 data/credit_budget.json
 data/bounced_emails.json
 data/blocked_domains.json
+data/send_queue.json
 data/dry_run.json
 data/dry_run.json.txt
 data/drafts/

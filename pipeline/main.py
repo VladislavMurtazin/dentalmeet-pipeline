@@ -16,6 +16,8 @@
   python -m pipeline.main alert-test [--times 3]
   python -m pipeline.main deliverability [--record inbox|spam]
   python -m pipeline.main bounce scan|cleanup|stats|record|test EMAIL
+  python -m pipeline.main queue-status
+  python -m pipeline.main timezone-test --state CA [--email x@y.com]
 """
 
 from __future__ import annotations
@@ -280,6 +282,47 @@ def run_bounce(_args: argparse.Namespace) -> None:
         print(f"unknown bounce command: {cmd}")
 
 
+def run_queue_status(_args: argparse.Namespace) -> None:
+    from .send_queue import print_queue_status
+
+    print_queue_status()
+
+
+def run_timezone_test(args: argparse.Namespace) -> None:
+    """Test timezone window: e.g. CA lead at 3am PT should not send."""
+    from .send_queue import split_by_send_window
+    from .timezone_utils import (
+        can_send_now,
+        format_local_datetime_safe,
+        get_recipient_timezone,
+        next_send_datetime,
+        recipient_local_time,
+    )
+
+    state = getattr(args, "state", "CA") or "CA"
+    lead = {"Email": args.email or "test@example.com", "state": state, "Company": f"Test Co {state}"}
+    tz = get_recipient_timezone(lead)
+    local = recipient_local_time(tz)
+    print(f"lead state={state} timezone={tz}")
+    print(f"local time: {local.strftime('%Y-%m-%d %H:%M %Z')}")
+    print(f"can_send_now: {can_send_now(tz)}")
+    if not can_send_now(tz):
+        nxt = next_send_datetime(tz)
+        print(f"next send: {format_local_datetime_safe(nxt, tz)}")
+    item = {
+        "to": lead["Email"],
+        "subject": "test",
+        "body": "test",
+        "lead": lead,
+    }
+    ready, to_queue = split_by_send_window([item])
+    print(f"ready: {len(ready)}, queued: {len(to_queue)}")
+    if to_queue:
+        print("PASS: would queue (not send now)")
+    else:
+        print("SEND: would send immediately")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="DentalMeet lead pipeline")
     sub = parser.add_subparsers(dest="command")
@@ -393,6 +436,12 @@ def main() -> None:
     p_b_test = bounce_sub.add_parser("test", help="Simulate bounce for testing")
     p_b_test.add_argument("email")
 
+    sub.add_parser("queue-status", help="Show emails waiting for recipient-local send window")
+
+    p_tz = sub.add_parser("timezone-test", help="Test timezone send window for a state")
+    p_tz.add_argument("--state", default="CA", help="US state code (default CA)")
+    p_tz.add_argument("--email", default="test@example.com")
+
     p_draft = sub.add_parser("draft_reply", help="Draft an AI reply for a lead question")
     p_draft.add_argument("email", help="Lead email (for context lookup)")
     p_draft.add_argument(
@@ -469,6 +518,14 @@ def main() -> None:
 
     if args.command == "bounce":
         run_bounce(args)
+        return
+
+    if args.command == "queue-status":
+        run_queue_status(args)
+        return
+
+    if args.command == "timezone-test":
+        run_timezone_test(args)
         return
 
     # Default / research
