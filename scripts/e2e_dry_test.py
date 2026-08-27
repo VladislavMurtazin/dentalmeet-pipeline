@@ -160,12 +160,15 @@ def main() -> int:
             url = generate_oauth_url(TEST_EMAIL, "Test User")
             ok = send_connect_instructions(TEST_EMAIL, "Test User")
         body = captured[-1]["body"] if captured else ""
+        subject = captured[-1].get("subject", "") if captured else ""
         has_oauth = "accounts.google.com" in url or "oauth" in url.lower()
         has_link = url[:40] in body or "accounts.google.com" in body
+        has_transparency = "WHAT WE ACCESS" in body and "Plan B" in body
         report(
             "5. connect_workspace OAuth email",
-            ok and has_oauth and has_link,
-            f"send={ok} url_ok={has_oauth} link_in_email={has_link} url_prefix={url[:60]}…",
+            ok and has_oauth and has_link and has_transparency,
+            f"send={ok} url_ok={has_oauth} link_in_email={has_link} "
+            f"transparency={has_transparency} subject={subject[:50]!r}",
         )
     except Exception as e:
         report("5. connect_workspace OAuth email", False, str(e))

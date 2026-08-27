@@ -101,6 +101,18 @@ FIELD_ALIASES = {
         "calendly token",
     ),
     "workspace_email": ("google workspace email", "workspace email", "sending"),
+    "send_mode": (
+        "how would you like to send emails",
+        "email sending method",
+        "send emails to dental practices",
+        "workspace or plan b",
+    ),
+    "workspace_understanding": (
+        "i understand that dentalmeet will only access",
+        "understand email access",
+        "workspace understanding",
+        "email sending and reply tracking",
+    ),
     "deal_size": ("average deal size", "deal size"),
     "pricing": ("preferred pricing", "pricing model"),
     "extra": ("anything else", "other notes", "comments"),
@@ -121,6 +133,24 @@ def brief_form_url() -> str:
 
 def calendly_url() -> str:
     return _env_url("CALENDLY_URL", DEFAULT_CALENDLY)
+
+
+def _is_plan_b_send_mode(send_mode: str) -> bool:
+    """True when client chose DentalMeet accounts instead of Workspace OAuth."""
+    text = (send_mode or "").strip().lower()
+    if not text:
+        return False
+    if "plan b" in text:
+        return True
+    if "dentalmeet" in text and ("behalf" in text or "no access" in text):
+        return True
+    if "no access" in text or "without connecting" in text:
+        return True
+    if "connect" in text and "workspace" in text:
+        return False
+    if "google workspace" in text and "recommended" in text:
+        return False
+    return "dentalmeet" in text or "our account" in text
 
 
 def send_async_onboarding(lead_email: str, first_name: str, company: str) -> bool:
@@ -269,9 +299,19 @@ def _ensure_processed_col(ws, headers: list[str]) -> int:
     return col - 1
 
 
-def _pilot_welcome_email(name: str, email: str) -> bool:
+def _pilot_welcome_email(name: str, email: str, *, plan_b: bool = False) -> bool:
     first = (name or "").strip().split()[0] if (name or "").strip() else "there"
     subject = "welcome — pilot started (no upfront payment)"
+    if plan_b:
+        next_step = (
+            "Next: we'll send from our accounts on your behalf (Plan B) — "
+            "watch for a confirmation email. No Google Workspace connection needed."
+        )
+    else:
+        next_step = (
+            "Next: I'll connect your Workspace and launch outreach within 24 hours. "
+            "Watch for a separate email explaining exactly what access we need."
+        )
     body = (
         f"Hi {first},\n"
         f"\n"
@@ -282,8 +322,7 @@ def _pilot_welcome_email(name: str, email: str) -> bool:
         f"\n"
         f"{QUALIFIED_MEETING_BLURB}"
         f"\n"
-        f"Next: I'll connect your Workspace and launch outreach within 24 hours. "
-        f"Watch for a separate email with the Google connect link.\n"
+        f"{next_step}\n"
         f"\n"
         f"Agreement summary (full terms on request):\n"
         f"— Pilot = post-payment\n"
@@ -383,6 +422,9 @@ def check_form_responses() -> dict:
 
         name = _cell(row, fmap.get("name"))
         company = _cell(row, fmap.get("company"))
+        send_mode = _cell(row, fmap.get("send_mode"))
+        workspace_understanding = _cell(row, fmap.get("workspace_understanding"))
+        plan_b = _is_plan_b_send_mode(send_mode)
         brief = {
             "Company": company,
             "Name": name,
@@ -397,6 +439,9 @@ def check_form_responses() -> dict:
             "Pricing": _cell(row, fmap.get("pricing")),
             "Notes": _cell(row, fmap.get("extra")),
             "Created": today,
+            "Send Mode": send_mode,
+            "Workspace Understanding": workspace_understanding,
+            "workspace_send_mode": "fallback" if plan_b else "workspace",
         }
 
         # --- validate before creating client ---
@@ -439,8 +484,16 @@ def check_form_responses() -> dict:
                 _repeat_welcome_email(name, email)
                 label = "repeat + $300 upfront"
             else:
-                _pilot_welcome_email(name, email)
+                _pilot_welcome_email(name, email, plan_b=plan_b)
                 label = "pilot $0 upfront"
+
+            if plan_b and not record.get("continuation"):
+                from delivery.connect_workspace import set_workspace_status
+                from delivery.workspace_transparency import send_plan_b_confirmation
+
+                set_workspace_status(email, "fallback")
+                send_plan_b_confirmation(email, name=name, company=company)
+                print(f"row {i}: Plan B selected — skipped OAuth, sent confirmation")
 
             stats["processed"] += 1
             print(f"row {i}: processed {email} ({label})")
@@ -459,7 +512,7 @@ def check_form_responses() -> dict:
                     launch_result = launch_client(
                         email,
                         name=name,
-                        send_connect_link=True,
+                        send_connect_link=not plan_b,
                     )
                     if launch_result.get("status") in ("running", "awaiting_workspace"):
                         stats["launched"] += 1

@@ -17,11 +17,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 ROOT = Path(__file__).resolve().parent.parent
-SCOPES = [
-    "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/calendar",
-]
+from .workspace_transparency import OAUTH_SCOPES, generate_plan_b_confirmation, generate_transparency_email
+
+SCOPES = OAUTH_SCOPES
 
 # pending state -> client_email (in-memory; fine for local server)
 _PENDING: dict[str, str] = {}
@@ -168,36 +166,12 @@ def send_connect_instructions(client_email: str, client_name: str = "") -> bool:
         return False
 
     oauth_url = generate_oauth_url(client_email, client_name)
-    first = (client_name or "").strip().split()[0] or "there"
-    domain = client_email.split("@")[-1]
-
-    subject = "connect your Google Workspace (2 minutes)"
-    body = (
-        f"Hi {first},\n"
-        f"\n"
-        f"To launch your campaign, I need to connect your Google Workspace\n"
-        f"so emails go out from your domain ({domain}).\n"
-        f"\n"
-        f"This takes 2 minutes:\n"
-        f"\n"
-        f"1. Click this secure link: {oauth_url}\n"
-        f"2. Sign in with your Google Workspace account ({client_email})\n"
-        f"3. Click \"Allow\" when prompted\n"
-        f"\n"
-        f"What this gives us access to:\n"
-        f"✅ Send emails from your domain\n"
-        f"✅ Read replies (so we can track responses)\n"
-        f"✅ Access your Calendar (for meeting tracking)\n"
-        f"\n"
-        f"We NEVER:\n"
-        f"❌ Delete any emails\n"
-        f"❌ Access files or documents\n"
-        f"❌ Change your settings\n"
-        f"\n"
-        f"If you have questions about security, just reply here.\n"
-        f"\n"
-        f"— Vladislav\n"
-        f"Founder, DentalMeet\n"
+    subject, body = generate_transparency_email(
+        {
+            "agency_owner_name": client_name,
+            "client_email": client_email,
+            "oauth_url": oauth_url,
+        }
     )
     return send_email(client_email, subject, body)
 
@@ -248,16 +222,8 @@ def decline_workspace(client_email: str, client_name: str = "") -> bool:
     if not is_email(email):
         return False
     set_workspace_status(email, "fallback")
-    first = (client_name or "").strip().split()[0] or "there"
-    subject = "got it — we'll send on your behalf"
-    body = (
-        f"Hi {first},\n\n"
-        f"Got it! We'll send emails on your behalf from our accounts. "
-        f"You'll receive all replies forwarded to this inbox.\n\n"
-        f"No Google Workspace connection needed — your campaign can start "
-        f"as soon as we finish building your dental practice list.\n\n"
-        f"— Vladislav\n"
-        f"Founder, DentalMeet\n"
+    subject, body = generate_plan_b_confirmation(
+        {"agency_owner_name": client_name, "client_email": email}
     )
     ok = send_email(email, subject, body)
     print(f"workspace declined → fallback mode for {email}")

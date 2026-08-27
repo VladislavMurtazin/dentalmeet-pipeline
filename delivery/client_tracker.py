@@ -74,6 +74,7 @@ TRACKER_HEADERS = [
     "search_geo_primary",
     "search_geo_expanded",
     "geo_was_expanded",
+    "workspace_send_mode",
 ]
 
 
@@ -317,7 +318,9 @@ def create_client_record(
         "Average Meetings per Engagement": _avg_meetings(prior_hits, cols),
         "Meetings": "0",
         "Payment Status": "unpaid" if is_repeat else "post_pay",
-        "workspace_status": "pending",
+        "workspace_status": "fallback"
+        if (brief_data.get("workspace_send_mode") or "").strip().lower() == "fallback"
+        else "pending",
         "client_geo": brief_data.get("Geo") or brief_data.get("geo") or "",
         "dental_search_geo": brief_data.get("Geo") or brief_data.get("geo") or "",
         "geo_expanded": "false",
@@ -325,6 +328,9 @@ def create_client_record(
         "search_geo_primary": brief_data.get("Geo") or brief_data.get("geo") or "",
         "search_geo_expanded": "",
         "geo_was_expanded": "false",
+        "workspace_send_mode": brief_data.get("workspace_send_mode")
+        or brief_data.get("Send Mode")
+        or "workspace",
     }
 
     # Build row aligned to current headers
