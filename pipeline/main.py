@@ -11,7 +11,10 @@
   python -m pipeline.main check_forms
   python -m pipeline.main launch_pending
   python -m pipeline.main draft_reply EMAIL --body "their question"
-  python -m pipeline.main verify_payment TXID [--email client@agency.com]
+  python -m pipeline.main credit-stats
+  python -m pipeline.main daily_summary [--force]
+  python -m pipeline.main alert-test [--times 3]
+  python -m pipeline.main deliverability [--record inbox|spam]
 """
 
 from __future__ import annotations
@@ -222,6 +225,32 @@ def run_credit_stats(_args: argparse.Namespace) -> None:
     print_credit_stats()
 
 
+def run_daily_summary(_args: argparse.Namespace) -> None:
+    from .alerts import send_daily_summary
+
+    send_daily_summary(force=getattr(_args, "force", False))
+
+
+def run_alert_test(_args: argparse.Namespace) -> None:
+    """Simulate 3 consecutive job failures to verify alerting."""
+    from .alerts import simulate_job_failures
+
+    times = getattr(_args, "times", 3)
+    job = getattr(_args, "job", "alert_test")
+    simulate_job_failures(job, times=times)
+    print(f"simulated {times} failures for job={job!r}")
+
+
+def run_deliverability(_args: argparse.Namespace) -> None:
+    from .deliverability import record_test_result, run_deliverability_test
+
+    if getattr(_args, "record", None):
+        record_test_result(_args.record)
+        return
+    result = run_deliverability_test(check_imap=not getattr(_args, "no_imap", False))
+    print(json.dumps(result, ensure_ascii=False), flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="DentalMeet lead pipeline")
     sub = parser.add_subparsers(dest="command")
@@ -309,6 +338,21 @@ def main() -> None:
 
     sub.add_parser("credit-stats", help="Show Apollo credit budget usage this month")
 
+    p_summary = sub.add_parser("daily_summary", help="Send daily pipeline summary alert")
+    p_summary.add_argument("--force", action="store_true", help="Send even if already sent today")
+
+    p_alert = sub.add_parser("alert-test", help="Simulate job failures to test alerting")
+    p_alert.add_argument("--times", type=int, default=3)
+    p_alert.add_argument("--job", default="alert_test")
+
+    p_deliv = sub.add_parser("deliverability", help="Run or record deliverability test")
+    p_deliv.add_argument(
+        "--record",
+        choices=["inbox", "spam"],
+        help="Manually record last test folder placement",
+    )
+    p_deliv.add_argument("--no-imap", action="store_true", help="Send only; skip IMAP check")
+
     p_draft = sub.add_parser("draft_reply", help="Draft an AI reply for a lead question")
     p_draft.add_argument("email", help="Lead email (for context lookup)")
     p_draft.add_argument(
@@ -333,40 +377,54 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    from .alerts import run_monitored
+
     if args.command == "send":
-        run_send(args)
+        run_monitored("send", run_send, args)
         return
 
     if args.command == "sync-leads":
-        run_sync_leads(args)
+        run_monitored("sync-leads", run_sync_leads, args)
         return
 
     if args.command == "followup":
-        run_followup(args)
+        run_monitored(f"followup_{args.wave}", run_followup, args)
         return
 
     if args.command == "replies":
-        run_replies(args)
+        run_monitored("replies", run_replies, args)
         return
 
     if args.command == "check_forms":
-        run_check_forms(args)
+        run_monitored("check_forms", run_check_forms, args)
         return
 
     if args.command == "launch_pending":
-        run_launch_pending(args)
+        run_monitored("launch_pending", run_launch_pending, args)
         return
 
     if args.command == "draft_reply":
-        run_draft_reply(args)
+        run_monitored("draft_reply", run_draft_reply, args)
         return
 
     if args.command == "verify_payment":
-        run_verify_payment(args)
+        run_monitored("verify_payment", run_verify_payment, args)
         return
 
     if args.command == "credit-stats":
-        run_credit_stats(args)
+        run_monitored("credit-stats", run_credit_stats, args)
+        return
+
+    if args.command == "daily_summary":
+        run_daily_summary(args)
+        return
+
+    if args.command == "alert-test":
+        run_alert_test(args)
+        return
+
+    if args.command == "deliverability":
+        run_monitored("deliverability", run_deliverability, args)
         return
 
     # Default / research
@@ -376,11 +434,20 @@ def main() -> None:
             allow_no_email=args.allow_no_email,
             page=args.page if args.page is not None else 1,
             from_csv=args.from_csv,
+            limit=None,
+            enrich=None,
+            debug_dedup=False,
         )
+        run_monitored("research", run_research, args)
+        return
     elif getattr(args, "page", None) is None and args.command == "research":
         args.page = 1
 
-    run_research(args)
+    if args.command == "research":
+        run_monitored("research", run_research, args)
+        return
+
+    parser.print_help()
 
 
 if __name__ == "__main__":

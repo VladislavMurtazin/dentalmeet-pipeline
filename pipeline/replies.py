@@ -82,6 +82,19 @@ def _body_preview(msg: email.message.Message, limit: int = 300) -> str:
     return text[:limit]
 
 
+def _is_bounce_notification(msg: email.message.Message) -> bool:
+    """True for delivery failure / mailer-daemon notifications."""
+    _, from_email = parseaddr(msg.get("From", ""))
+    from_email = (from_email or "").strip().lower()
+    if "mailer-daemon" in from_email or "postmaster" in from_email:
+        return True
+    subject = _decode_header(msg.get("Subject")).strip().lower()
+    return any(
+        x in subject
+        for x in ("undeliverable", "delivery status", "mail delivery failed", "returned mail")
+    )
+
+
 def _is_reply(msg: email.message.Message) -> bool:
     if msg.get("In-Reply-To"):
         return True
@@ -118,7 +131,7 @@ def fetch_recent_replies(days: int = 3) -> list[dict]:
                     continue
                 raw = msg_data[0][1]
                 msg = email.message_from_bytes(raw)
-                if not _is_reply(msg):
+                if not _is_reply(msg) and not _is_bounce_notification(msg):
                     continue
 
                 from_name, from_email = parseaddr(msg.get("From", ""))
@@ -163,6 +176,16 @@ def fetch_recent_replies(days: int = 3) -> list[dict]:
 
     print(f"IMAP: {len(replies)} reply candidates")
     return replies
+
+
+def _is_bounce_notification_from_text(from_email: str, subject: str, body: str) -> bool:
+    blob = f"{from_email} {subject} {body}".lower()
+    if "mailer-daemon" in blob or "postmaster" in blob:
+        return True
+    return any(
+        x in blob
+        for x in ("undeliverable", "delivery status", "mail delivery failed", "returned mail")
+    )
 
 
 def match_replies_to_leads(replies: list[dict]) -> dict:
@@ -214,6 +237,15 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
             continue
         seen.add(addr)
 
+        body = reply.get("body") or reply.get("body_preview") or ""
+        if _is_bounce_notification_from_text(addr, reply.get("subject", ""), body):
+            from .alerts import record_bounce
+
+            record_bounce(1)
+            skipped.append(addr)
+            print(f"bounce detected: {addr}")
+            continue
+
         if is_suppressed(addr):
             print(f"skip suppressed: {addr}")
             skipped.append(addr)
@@ -225,7 +257,6 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
             continue
 
         row_index = hit["row_index"]
-        body = reply.get("body") or reply.get("body_preview") or ""
         reply_type = classify_incoming_email(body)
         first = (hit.get("contact") or "").split()[0] if hit.get("contact") else ""
         today = datetime.now(timezone.utc).date().isoformat()
@@ -338,6 +369,15 @@ def run_reply_check(days: int = 3) -> dict:
     print(f"=== reply check (last {days} days) ===")
     replies = fetch_recent_replies(days=days)
     summary = match_replies_to_leads(replies)
+
+    from .alerts import bump_daily_metric
+
+    bump_daily_metric("replies", summary.get("total_replies") or 0)
+    interested = sum(
+        1 for u in summary.get("updated") or [] if u.get("reply_type") == "interested"
+    )
+    if interested:
+        bump_daily_metric("interested", interested)
 
     print("--- report ---")
     print(f"replies found: {summary['total_replies']}")

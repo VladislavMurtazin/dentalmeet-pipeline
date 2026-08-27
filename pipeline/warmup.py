@@ -1166,12 +1166,17 @@ def main(argv: list[str] | None = None) -> None:
     p_add.add_argument("--name", default="", help="Display name")
 
     args = parser.parse_args(argv)
+    from .alerts import bump_daily_metric, run_monitored
+
     if args.command == "send":
-        send_warmup_emails()
+        result = run_monitored("warmup_send", send_warmup_emails)
+        sent = int((result or {}).get("sent") or 0)
+        if sent:
+            bump_daily_metric("warmup_emails", sent)
     elif args.command == "process":
-        process_warmup_inbox()
+        run_monitored("warmup_process", process_warmup_inbox)
     elif args.command == "stats":
-        show_stats()
+        run_monitored("warmup_stats", show_stats)
     elif args.command == "reset":
         reset_schedule()
     elif args.command == "add-external":

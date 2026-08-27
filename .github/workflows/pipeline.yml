@@ -14,6 +14,7 @@ on:
     - cron: "0 10 * * *"     # payment check — daily 10:00 UTC
     - cron: "0 */4 * * *"    # warmup_send — every 4 hours
     - cron: "0 2-23/4 * * *" # warmup_process — 02,06,10,14,18,22 UTC
+    - cron: "0 20 * * *"     # daily_summary — 20:00 UTC
   workflow_dispatch:
     inputs:
       job:
@@ -35,6 +36,7 @@ on:
           - warmup_send
           - warmup_process
           - warmup_stats
+          - daily_summary
           - all
 
 # Shared secrets for all jobs (per-job env can still override / extend).
@@ -55,6 +57,8 @@ env:
   TRC20_WALLET_ADDRESS: ${{ secrets.TRC20_WALLET_ADDRESS }}
   FORM_RESPONSES_SPREADSHEET: ${{ secrets.FORM_RESPONSES_SPREADSHEET }}
   FORM_RESPONSES_WORKSHEET: ${{ secrets.FORM_RESPONSES_WORKSHEET }}
+  ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+  ALERT_FROM_EMAIL: ${{ secrets.ALERT_FROM_EMAIL }}
   GMAIL_TOKEN_FILE: gmail_token.json
   DRY_RUN: "false"
 
@@ -778,3 +782,52 @@ jobs:
         with:
           path: data/warmup_schedule.json
           key: warmup-schedule-${{ github.repository }}-${{ github.run_id }}
+
+  daily_summary:
+    name: daily_summary
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 20 * * *') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.job == 'daily_summary' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore alert metrics
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/daily_metrics.json
+            data/alert_state.json
+            data/failure_log.json
+          key: alert-metrics-${{ github.repository }}
+
+      - name: Send daily summary
+        run: python -m pipeline.main daily_summary --force
+        env:
+          SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
+          SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          ALERT_FROM_EMAIL: ${{ secrets.ALERT_FROM_EMAIL }}
+
+      - name: Persist alert metrics
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/daily_metrics.json
+            data/alert_state.json
+            data/failure_log.json
+          key: alert-metrics-${{ github.repository }}-${{ github.run_id }}

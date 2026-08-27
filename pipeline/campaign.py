@@ -160,6 +160,10 @@ def run_first_touch(limit: int = 5) -> dict:
     result = send_batch(recipients)
     today = date.today().isoformat()
 
+    from .alerts import record_send_batch
+
+    record_send_batch(len(result.get("sent") or []), len(result.get("failed") or []))
+
     if _dry_run():
         print(f"DRY_RUN: not marking Sent ({len(result['sent'])} would be marked {today})")
     else:
