@@ -18,7 +18,7 @@ on:
     - cron: "0 2-23/4 * * *" # warmup_process — 02,06,10,14,18,22 UTC
     - cron: "0 20 * * *"     # daily_summary — 20:00 UTC
     - cron: "0 10 * * 1"     # client_reports — Monday 10:00 UTC
-    - cron: "0 * * * *"      # calendar_sync — hourly
+    - cron: "0 * * * *"      # calendar_sync + crm export — hourly
   workflow_dispatch:
     inputs:
       job:
@@ -46,6 +46,7 @@ on:
           - analytics
           - client_reports
           - calendar_sync
+          - crm
           - all
 
 # Shared secrets for all jobs (per-job env can still override / extend).
@@ -591,6 +592,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Restore invoice registry
+        uses: actions/cache/restore@v4
+        with:
+          path: data/invoices
+          key: invoice-registry-${{ github.repository }}
+          restore-keys: |
+            invoice-registry-${{ github.repository }}-
+            crm-data-${{ github.repository }}-
+
       - name: Write runtime secrets
         env:
           GMAIL_TOKEN_JSON: ${{ secrets.GMAIL_TOKEN_JSON }}
@@ -612,18 +622,28 @@ jobs:
           done
           exit "$missing"
 
-      - name: Check unpaid / overdue invoices
+      - name: Check unpaid / overdue invoices and poll USDT
         run: |
           set -euo pipefail
-          python -m delivery.payment_tracker check_overdue
+          mkdir -p data/invoices
+          python -m delivery.payment_tracker poll_incoming
+          python -m delivery.payment_tracker reminders
         env:
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
           SHEET_NAME: ${{ secrets.SHEET_NAME }}
           GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           TRC20_WALLET_ADDRESS: ${{ secrets.TRC20_WALLET_ADDRESS }}
+          USDT_WALLET_TRC20: ${{ secrets.TRC20_WALLET_ADDRESS }}
           GMAIL_TOKEN_FILE: gmail_token.json
           DRY_RUN: "false"
+
+      - name: Persist invoice registry
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/invoices
+          key: invoice-registry-${{ github.repository }}-${{ github.run_id }}
 
   warmup_send:
     name: warmup_send
@@ -1085,6 +1105,71 @@ jobs:
             data/calendar_sync_state.json
             tokens
           key: calendar-sync-${{ github.repository }}-${{ github.run_id }}
+
+  crm:
+    name: crm
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 * * * *') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.job == 'crm' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore invoice registry
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/invoices/registry.json
+            data/invoices/processed_txids.json
+            data/crm.json
+          key: crm-data-${{ github.repository }}
+          restore-keys: |
+            crm-data-${{ github.repository }}-
+            crm-data-
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in GOOGLE_SERVICE_ACCOUNT SHEET_NAME; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret/env: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Export CRM snapshot
+        run: |
+          set -euo pipefail
+          mkdir -p data data/invoices
+          python -m pipeline.crm_export export
+        env:
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+
+      - name: Persist CRM data
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/invoices/registry.json
+            data/invoices/processed_txids.json
+            data/crm.json
+          key: crm-data-${{ github.repository }}-${{ github.run_id }}
 
   bounce_cleanup:
     name: bounce_cleanup

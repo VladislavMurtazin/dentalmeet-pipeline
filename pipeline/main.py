@@ -222,6 +222,18 @@ def run_verify_payment(args: argparse.Namespace) -> None:
     print(result)
 
 
+def run_payment_status(_args: argparse.Namespace) -> None:
+    from delivery.payment_tracker import payment_status_all
+
+    print(json.dumps(payment_status_all(), indent=2))
+
+
+def run_crm_export(_args: argparse.Namespace) -> None:
+    from .crm_export import export_crm
+
+    export_crm()
+
+
 def run_credit_stats(_args: argparse.Namespace) -> None:
     from .credit_budget import print_credit_stats
 
@@ -458,6 +470,9 @@ def main() -> None:
         help="If set, mark this client paid in Clients sheet after verify",
     )
 
+    sub.add_parser("payment-status", help="Show all clients with payment status")
+    sub.add_parser("crm-export", help="Export CRM snapshot for /crm dashboard")
+
     # Research flags at top level when no subcommand
     parser.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--allow-no-email", action="store_true", help=argparse.SUPPRESS)
@@ -498,6 +513,14 @@ def main() -> None:
 
     if args.command == "verify_payment":
         run_monitored("verify_payment", run_verify_payment, args)
+        return
+
+    if args.command == "payment-status":
+        run_payment_status(args)
+        return
+
+    if args.command == "crm-export":
+        run_monitored("crm-export", run_crm_export, args)
         return
 
     if args.command == "credit-stats":
