@@ -17,7 +17,8 @@ on:
     - cron: "0 */4 * * *"    # warmup_send — every 4 hours
     - cron: "0 2-23/4 * * *" # warmup_process — 02,06,10,14,18,22 UTC
     - cron: "0 20 * * *"     # daily_summary — 20:00 UTC
-    - cron: "0 21 * * *"     # analytics — 21:00 UTC
+    - cron: "0 10 * * 1"     # client_reports — Monday 10:00 UTC
+    - cron: "0 * * * *"      # calendar_sync — hourly
   workflow_dispatch:
     inputs:
       job:
@@ -43,6 +44,8 @@ on:
           - bounce_cleanup
           - backup
           - analytics
+          - client_reports
+          - calendar_sync
           - all
 
 # Shared secrets for all jobs (per-job env can still override / extend).
@@ -970,6 +973,118 @@ jobs:
             data/analytics.json
             data/daily_metrics.json
           key: analytics-data-${{ github.repository }}-${{ github.run_id }}
+
+  client_reports:
+    name: client_reports
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 10 * * 1') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.job == 'client_reports' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in GOOGLE_SERVICE_ACCOUNT SHEET_NAME SMTP_ACCOUNTS SMTP_APP_PASSWORDS; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret/env: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Send weekly client reports
+        run: |
+          set -euo pipefail
+          mkdir -p data/client_reports logs
+          python -m delivery.client_reports send_all
+        env:
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
+          SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          CALENDLY_API_TOKEN: ${{ secrets.CALENDLY_API_TOKEN }}
+          TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
+
+      - name: Persist client report archives
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/client_reports
+          key: client-reports-${{ github.repository }}-${{ github.run_id }}
+
+  calendar_sync:
+    name: calendar_sync
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 * * * *') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.job == 'calendar_sync' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore calendar sync state
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/calendar_sync_state.json
+            tokens
+          key: calendar-sync-${{ github.repository }}
+          restore-keys: |
+            calendar-sync-${{ github.repository }}-
+            calendar-sync-
+
+      - name: Sync Calendly bookings to client calendars
+        run: |
+          set -euo pipefail
+          mkdir -p data tokens
+          python -m delivery.calendar_sync sync
+        env:
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
+          SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          CALENDLY_API_TOKEN: ${{ secrets.CALENDLY_API_TOKEN }}
+          TOKEN_ENCRYPTION_KEY: ${{ secrets.TOKEN_ENCRYPTION_KEY }}
+          OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+          OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+          OAUTH_REDIRECT_URI: ${{ secrets.OAUTH_REDIRECT_URI }}
+
+      - name: Persist calendar sync state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/calendar_sync_state.json
+            tokens
+          key: calendar-sync-${{ github.repository }}-${{ github.run_id }}
 
   bounce_cleanup:
     name: bounce_cleanup

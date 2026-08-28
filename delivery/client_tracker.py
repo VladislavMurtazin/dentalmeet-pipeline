@@ -75,6 +75,9 @@ TRACKER_HEADERS = [
     "search_geo_expanded",
     "geo_was_expanded",
     "workspace_send_mode",
+    "calendar_connected",
+    "meetings_this_month",
+    "next_meeting",
 ]
 
 
