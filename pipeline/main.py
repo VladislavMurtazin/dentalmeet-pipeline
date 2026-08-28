@@ -234,6 +234,47 @@ def run_crm_export(_args: argparse.Namespace) -> None:
     export_crm()
 
 
+def run_case_studies(args: argparse.Namespace) -> None:
+    from delivery.case_studies import (
+        approve_case_study,
+        check_triggers,
+        export_to_site,
+        list_case_studies,
+        simulate_case_study,
+    )
+
+    cmd = getattr(args, "case_cmd", "list")
+    if cmd == "list":
+        print(json.dumps(list_case_studies(), indent=2))
+    elif cmd == "check":
+        print(json.dumps(check_triggers(dry_run=getattr(args, "dry_run", False)), indent=2))
+    elif cmd == "simulate":
+        print(
+            json.dumps(
+                simulate_case_study(
+                    getattr(args, "email", "demo@agency.com"),
+                    meetings=getattr(args, "meetings", 12),
+                    location=getattr(args, "location", "Los Angeles, CA"),
+                ),
+                indent=2,
+            )
+        )
+    elif cmd == "approve":
+        print(
+            json.dumps(
+                approve_case_study(
+                    args.case_id,
+                    quote=getattr(args, "quote", None) or None,
+                    show_name=getattr(args, "show_name", False),
+                    show_logo=getattr(args, "show_logo", False),
+                ),
+                indent=2,
+            )
+        )
+    elif cmd == "export":
+        export_to_site()
+
+
 def run_credit_stats(_args: argparse.Namespace) -> None:
     from .credit_budget import print_credit_stats
 
@@ -473,6 +514,22 @@ def main() -> None:
     sub.add_parser("payment-status", help="Show all clients with payment status")
     sub.add_parser("crm-export", help="Export CRM snapshot for /crm dashboard")
 
+    p_cs = sub.add_parser("case-studies", help="Case study generation and publishing")
+    cs_sub = p_cs.add_subparsers(dest="case_cmd", required=True)
+    cs_sub.add_parser("list", help="List case studies and approval status")
+    p_cs_check = cs_sub.add_parser("check", help="Trigger drafts for 10+ meeting clients")
+    p_cs_check.add_argument("--dry-run", action="store_true")
+    p_cs_sim = cs_sub.add_parser("simulate", help="Simulate case study draft")
+    p_cs_sim.add_argument("--email", default="demo@agency.com")
+    p_cs_sim.add_argument("--meetings", type=int, default=12)
+    p_cs_sim.add_argument("--location", default="Los Angeles, CA")
+    p_cs_ap = cs_sub.add_parser("approve", help="Approve and publish case study")
+    p_cs_ap.add_argument("case_id")
+    p_cs_ap.add_argument("--quote", default="")
+    p_cs_ap.add_argument("--show-name", action="store_true")
+    p_cs_ap.add_argument("--show-logo", action="store_true")
+    cs_sub.add_parser("export", help="Export approved case studies to website JSON")
+
     # Research flags at top level when no subcommand
     parser.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--allow-no-email", action="store_true", help=argparse.SUPPRESS)
@@ -521,6 +578,10 @@ def main() -> None:
 
     if args.command == "crm-export":
         run_monitored("crm-export", run_crm_export, args)
+        return
+
+    if args.command == "case-studies":
+        run_monitored("case-studies", run_case_studies, args)
         return
 
     if args.command == "credit-stats":

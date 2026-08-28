@@ -25,6 +25,7 @@ data/send_queue.json
 data/backups/
 data/analytics.json
 data/crm.json
+data/case_studies.json
 data/template_performance.json
 data/generated_templates.json
 data/calendar_sync_state.json
