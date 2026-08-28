@@ -2,6 +2,7 @@ name: lead-pipeline
 
 on:
   schedule:
+    - cron: "0 2 * * *"      # backup — daily 02:00 UTC
     - cron: "0 8 * * *"      # research — daily 08:00 UTC
 #    - cron: "0 14 * * 1-5"   # send — weekdays 14:00 UTC
 #    - cron: "0 15 * * 1-5"   # followup1 — weekdays 15:00 UTC
@@ -39,6 +40,7 @@ on:
           - warmup_stats
           - daily_summary
           - bounce_cleanup
+          - backup
           - all
 
 # Shared secrets for all jobs (per-job env can still override / extend).
@@ -833,6 +835,71 @@ jobs:
             data/alert_state.json
             data/failure_log.json
           key: alert-metrics-${{ github.repository }}-${{ github.run_id }}
+
+  backup:
+    name: backup
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 2 * * *') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.job == 'backup' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore sheet backups
+        uses: actions/cache/restore@v4
+        with:
+          path: data/backups
+          key: sheet-backups-${{ github.repository }}
+          restore-keys: |
+            sheet-backups-${{ github.repository }}-
+            sheet-backups-
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in GOOGLE_SERVICE_ACCOUNT SHEET_NAME; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret/env: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Backup all sheets to CSV
+        run: |
+          set -euo pipefail
+          mkdir -p data/backups
+          python -m pipeline.backup
+        env:
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          FORM_RESPONSES_SPREADSHEET: ${{ secrets.FORM_RESPONSES_SPREADSHEET }}
+          FORM_RESPONSES_WORKSHEET: ${{ secrets.FORM_RESPONSES_WORKSHEET }}
+          SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
+          SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          ALERT_FROM_EMAIL: ${{ secrets.ALERT_FROM_EMAIL }}
+
+      - name: Persist sheet backups
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/backups
+          key: sheet-backups-${{ github.repository }}-${{ github.run_id }}
 
   bounce_cleanup:
     name: bounce_cleanup
