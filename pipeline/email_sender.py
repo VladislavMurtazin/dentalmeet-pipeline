@@ -433,6 +433,11 @@ def send_batch(
 
         if ok:
             sent.append(item)
+            sel_log = item.get("template_selection_log")
+            if sel_log:
+                print(sel_log)
+            elif item.get("template_id"):
+                print(f"Selected {item['template_id']}")
             print(f"[{i + 1}/{len(batch)}] sent: {to}")
         else:
             failed.append(item)

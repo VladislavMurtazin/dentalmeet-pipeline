@@ -65,6 +65,7 @@ def enqueue_item(
         "row_index": item.get("row_index"),
         "Notes": item.get("Notes", ""),
         "template_id": item.get("template_id", ""),
+        "template_selection_log": item.get("template_selection_log", ""),
         "timezone": tz_name,
         "queued_at": _utc_now().isoformat(timespec="seconds"),
         "send_after": send_after.astimezone(timezone.utc).isoformat(),
@@ -149,6 +150,7 @@ def process_queue(limit: int) -> dict:
             "row_index": q.get("row_index"),
             "Notes": q.get("Notes", ""),
             "template_id": q.get("template_id", ""),
+            "template_selection_log": q.get("template_selection_log", ""),
             "timezone": q.get("timezone"),
             "queue_id": q.get("id"),
         }

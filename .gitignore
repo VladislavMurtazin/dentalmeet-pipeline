@@ -24,6 +24,8 @@ data/blocked_domains.json
 data/send_queue.json
 data/backups/
 data/analytics.json
+data/template_performance.json
+data/generated_templates.json
 data/dry_run.json
 data/dry_run.json.txt
 data/drafts/

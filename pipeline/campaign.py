@@ -148,7 +148,7 @@ def run_first_touch(limit: int = 5) -> dict:
         company = lead.get("Company", "").strip()
         opener = _opener_from_lead(lead)
         first = _first_name(lead.get("Contact", ""))
-        subject, body, template_id = build_agency_email(
+        subject, body, template_id, selection_log = build_agency_email(
             first_name=first,
             company=company,
             opener=opener,
@@ -162,6 +162,7 @@ def run_first_touch(limit: int = 5) -> dict:
                 "row_index": lead["row_index"],
                 "Notes": lead.get("Notes", ""),
                 "template_id": template_id,
+                "template_selection_log": selection_log,
                 "lead": lead,
             }
         )

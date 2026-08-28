@@ -683,19 +683,36 @@ def _dental_values(client_info: dict, **kwargs) -> dict:
     }
 
 
-def pick_agency_template(start_index: int | None = None) -> tuple[dict, int]:
-    """Pick next usable agency template (skip if required URLs missing)."""
-    state = _load_rotation()
-    base = int(start_index if start_index is not None else state["agency_index"]) % 10
+def pick_agency_template(start_index: int | None = None) -> tuple[dict, int, str]:
+    """Pick agency template — weighted A/B when ranking ready, else round-robin."""
+    from .template_ab import all_agency_templates, is_ranking_ready, pick_weighted_template
+
+    templates = all_agency_templates(AGENCY_TEMPLATES)
     values = _agency_values()
-    for offset in range(len(AGENCY_TEMPLATES)):
-        idx = (base + offset) % len(AGENCY_TEMPLATES)
-        tpl = AGENCY_TEMPLATES[idx]
-        if _template_ready(tpl, values):
-            return tpl, idx
-    raise RuntimeError(
-        "No agency template available — set PRESENTATION_URL and BRIEF_FORM_URL in .env"
+    ready = [t for t in templates if _template_ready(t, values)]
+    if not ready:
+        raise RuntimeError(
+            "No agency template available — set PRESENTATION_URL and BRIEF_FORM_URL in .env"
+        )
+
+    if is_ranking_ready():
+        tpl, log = pick_weighted_template(ready)
+        idx = next(i for i, t in enumerate(templates) if t["id"] == tpl["id"])
+        return tpl, idx, log
+
+    state = _load_rotation()
+    base = int(start_index if start_index is not None else state["agency_index"]) % max(
+        len(templates), 1
     )
+    for offset in range(len(templates)):
+        idx = (base + offset) % len(templates)
+        tpl = templates[idx]
+        if _template_ready(tpl, values):
+            log = f"Selected {tpl['id']} (round-robin, A/B warming up)"
+            return tpl, idx, log
+    tpl = ready[0]
+    idx = next(i for i, t in enumerate(templates) if t["id"] == tpl["id"])
+    return tpl, idx, f"Selected {tpl['id']} (fallback)"
 
 
 def pick_dental_template(
@@ -719,7 +736,10 @@ def pick_dental_template(
 
 def advance_agency_rotation(used_index: int) -> None:
     state = _load_rotation()
-    state["agency_index"] = (int(used_index) + 1) % len(AGENCY_TEMPLATES)
+    from .template_ab import all_agency_templates
+
+    n = len(all_agency_templates(AGENCY_TEMPLATES))
+    state["agency_index"] = (int(used_index) + 1) % max(n, 1)
     _save_rotation(state)
 
 
@@ -729,13 +749,13 @@ def advance_dental_rotation(used_index: int) -> None:
     _save_rotation(state)
 
 
-def build_agency_email(**kwargs) -> tuple[str, str, str]:
-    """Build agency first-touch email. Returns (subject, body, template_id)."""
-    tpl, idx = pick_agency_template()
+def build_agency_email(**kwargs) -> tuple[str, str, str, str]:
+    """Build agency first-touch email. Returns (subject, body, template_id, selection_log)."""
+    tpl, idx, log = pick_agency_template()
     subject, body = render_agency_template(tpl, **_agency_values(**kwargs))
     advance_agency_rotation(idx)
     record_template_sent("agency", tpl["id"])
-    return subject, body, tpl["id"]
+    return subject, body, tpl["id"], log
 
 
 def build_dental_email(client_info: dict, **kwargs) -> tuple[str, str, str]:
@@ -789,7 +809,14 @@ def record_template_sent(kind: str, template_id: str) -> None:
     bucket = stats.get(kind, {})
     if template_id in bucket:
         bucket[template_id]["sent"] = int(bucket[template_id].get("sent") or 0) + 1
+    else:
+        bucket.setdefault(template_id, {"sent": 0, "presentation_clicks": 0, "form_submissions": 0})
+        bucket[template_id]["sent"] = int(bucket[template_id].get("sent") or 0) + 1
     _save_stats(stats)
+    if kind == "agency":
+        from .template_ab import record_sent
+
+        record_sent(template_id)
 
 
 def record_presentation_click(kind: str, template_id: str) -> None:
@@ -803,6 +830,10 @@ def record_presentation_click(kind: str, template_id: str) -> None:
     from .alerts import bump_daily_metric
 
     bump_daily_metric("emails_opened")
+    if kind == "agency":
+        from .template_ab import record_opened
+
+        record_opened(template_id)
 
 
 def record_form_submission(kind: str, template_id: str) -> None:
@@ -844,7 +875,7 @@ def FIRST_EMAIL_TEMPLATE(
 ) -> tuple[str, str]:
     """Legacy wrapper — uses rotating async agency templates."""
     _ = calendly_url
-    subject, body, _tid = build_agency_email(
+    subject, body, _tid, _log = build_agency_email(
         first_name=first_name,
         company=company,
         opener=opener,

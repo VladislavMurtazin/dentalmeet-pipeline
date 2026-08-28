@@ -347,6 +347,7 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
                     "row_index": row_index,
                     "reply_type": reply_type,
                     "subject": reply.get("subject", ""),
+                    "notes": hit.get("notes") or "",
                     "previous_replied": hit["replied"],
                     "previous_type": hit["reply_type"],
                     "onboarding_sent": addr in onboarded,
@@ -386,6 +387,13 @@ def run_reply_check(days: int = 3) -> dict:
             bump_daily_metric("replies_questions")
         elif rt == "not_interested":
             bump_daily_metric("replies_not_interested")
+
+    from .template_ab import record_replied, template_id_from_notes
+
+    for u in summary.get("updated") or []:
+        tpl = template_id_from_notes(u.get("notes") or "")
+        if tpl:
+            record_replied(tpl, interested=u.get("reply_type") == "interested")
 
     print("--- report ---")
     print(f"replies found: {summary['total_replies']}")

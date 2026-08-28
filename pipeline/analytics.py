@@ -259,6 +259,9 @@ def update_daily(day: str | None = None) -> dict[str, Any]:
     _prune_old_days(data)
     save_analytics(data)
     export_to_site(data)
+    from .template_ab import maybe_generate_monthly_variants
+
+    maybe_generate_monthly_variants()
     return record
 
 
@@ -494,6 +497,8 @@ def main(argv: list[str] | None = None) -> None:
 
     sub.add_parser("weekly", help="Week summary")
     sub.add_parser("top-templates", help="Best/worst templates (30d)")
+    sub.add_parser("template-scores", help="A/B template scores and rankings")
+    sub.add_parser("reset-templates", help="Reset A/B template performance stats")
     p_trends = sub.add_parser("trends", help="30-day trend lines")
     p_trends.add_argument("--days", type=int, default=30)
 
@@ -512,6 +517,15 @@ def main(argv: list[str] | None = None) -> None:
         elif command == "top-templates":
             update_daily()
             print_top_templates()
+        elif command == "template-scores":
+            from .template_ab import maybe_generate_monthly_variants, print_template_scores
+
+            maybe_generate_monthly_variants()
+            print_template_scores()
+        elif command == "reset-templates":
+            from .template_ab import reset_templates
+
+            reset_templates()
         elif command == "trends":
             update_daily()
             print_trends(getattr(args, "days", 30))
