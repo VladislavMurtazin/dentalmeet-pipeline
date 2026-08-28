@@ -377,11 +377,15 @@ def run_reply_check(days: int = 3) -> dict:
     from .alerts import bump_daily_metric
 
     bump_daily_metric("replies", summary.get("total_replies") or 0)
-    interested = sum(
-        1 for u in summary.get("updated") or [] if u.get("reply_type") == "interested"
-    )
-    if interested:
-        bump_daily_metric("interested", interested)
+    for u in summary.get("updated") or []:
+        rt = u.get("reply_type")
+        if rt == "interested":
+            bump_daily_metric("interested")
+            bump_daily_metric("replies_interested")
+        elif rt == "question":
+            bump_daily_metric("replies_questions")
+        elif rt == "not_interested":
+            bump_daily_metric("replies_not_interested")
 
     print("--- report ---")
     print(f"replies found: {summary['total_replies']}")

@@ -800,6 +800,9 @@ def record_presentation_click(kind: str, template_id: str) -> None:
             int(bucket[template_id].get("presentation_clicks") or 0) + 1
         )
     _save_stats(stats)
+    from .alerts import bump_daily_metric
+
+    bump_daily_metric("emails_opened")
 
 
 def record_form_submission(kind: str, template_id: str) -> None:

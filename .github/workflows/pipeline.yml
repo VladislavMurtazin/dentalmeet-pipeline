@@ -17,6 +17,7 @@ on:
     - cron: "0 */4 * * *"    # warmup_send — every 4 hours
     - cron: "0 2-23/4 * * *" # warmup_process — 02,06,10,14,18,22 UTC
     - cron: "0 20 * * *"     # daily_summary — 20:00 UTC
+    - cron: "0 21 * * *"     # analytics — 21:00 UTC
   workflow_dispatch:
     inputs:
       job:
@@ -41,6 +42,7 @@ on:
           - daily_summary
           - bounce_cleanup
           - backup
+          - analytics
           - all
 
 # Shared secrets for all jobs (per-job env can still override / extend).
@@ -900,6 +902,74 @@ jobs:
         with:
           path: data/backups
           key: sheet-backups-${{ github.repository }}-${{ github.run_id }}
+
+  analytics:
+    name: analytics
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 21 * * *') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.job == 'analytics' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore analytics data
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/analytics.json
+            data/daily_metrics.json
+          key: analytics-data-${{ github.repository }}
+          restore-keys: |
+            analytics-data-${{ github.repository }}-
+            analytics-data-
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in GOOGLE_SERVICE_ACCOUNT SHEET_NAME; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret/env: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Run daily analytics and email report
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          python -m pipeline.analytics daily --email
+        env:
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
+          SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          ALERT_FROM_EMAIL: ${{ secrets.ALERT_FROM_EMAIL }}
+          DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+
+      - name: Persist analytics data
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/analytics.json
+            data/daily_metrics.json
+          key: analytics-data-${{ github.repository }}-${{ github.run_id }}
 
   bounce_cleanup:
     name: bounce_cleanup

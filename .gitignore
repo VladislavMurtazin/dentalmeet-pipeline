@@ -23,6 +23,7 @@ data/bounced_emails.json
 data/blocked_domains.json
 data/send_queue.json
 data/backups/
+data/analytics.json
 data/dry_run.json
 data/dry_run.json.txt
 data/drafts/
