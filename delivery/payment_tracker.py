@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 INVOICES_DIR = ROOT / "data" / "invoices"
 REGISTRY_PATH = INVOICES_DIR / "registry.json"
 PROCESSED_TXIDS_PATH = INVOICES_DIR / "processed_txids.json"
+PAYMENTS_LOG_PATH = INVOICES_DIR / "payments_log.json"
 
 USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 AMOUNT_TOLERANCE = 0.50
@@ -25,9 +26,39 @@ AMOUNT_TOLERANCE = 0.50
 
 def _wallet() -> str:
     return (
-        os.environ.get("USDT_WALLET_TRC20", "").strip()
+        os.environ.get("USDT_WALLET_ADDRESS", "").strip()
+        or os.environ.get("USDT_WALLET_TRC20", "").strip()
         or os.environ.get("TRC20_WALLET_ADDRESS", "").strip()
     )
+
+
+def _load_payments_log() -> dict:
+    if not PAYMENTS_LOG_PATH.exists():
+        return {"payments": []}
+    try:
+        data = json.loads(PAYMENTS_LOG_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            data.setdefault("payments", [])
+            return data
+    except Exception:
+        pass
+    return {"payments": []}
+
+
+def _save_payments_log(data: dict) -> None:
+    INVOICES_DIR.mkdir(parents=True, exist_ok=True)
+    PAYMENTS_LOG_PATH.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def _log_payment(entry: dict) -> None:
+    data = _load_payments_log()
+    payments = data.setdefault("payments", [])
+    txid = (entry.get("txid") or "").strip()
+    if txid and any(p.get("txid") == txid for p in payments if isinstance(p, dict)):
+        return
+    payments.append(entry)
+    data["payments"] = payments[-500:]
+    _save_payments_log(data)
 
 
 def _load_registry() -> dict:
@@ -276,13 +307,20 @@ def _find_unpaid_by_amount(amount: float) -> dict | None:
 
 
 def _send_alert(subject: str, body: str) -> None:
+    try:
+        from pipeline.alerts import send_alert
+
+        send_alert(subject, body, severity="info")
+        return
+    except Exception:
+        pass
     alert_to = os.environ.get("ALERT_EMAIL", os.environ.get("GMAIL_EMAIL", "")).strip()
     if not alert_to:
         print(f"ALERT: {subject}\n{body}")
         return
     from pipeline.email_sender import send_email
 
-    send_email(alert_to, subject, body)
+    send_email(alert_to, subject, body, skip_unsubscribe=True, skip_throttle=True)
 
 
 def _update_sheet_payment(
@@ -449,10 +487,10 @@ def mark_invoice_as_paid(
     first = name.split()[0] if name else "there"
     send_email(
         email,
-        "payment confirmed — thank you",
+        "Payment received, thank you!",
         (
             f"Hi {first},\n\n"
-            f"Payment confirmed! Thanks.\n\n"
+            f"Payment received, thank you!\n\n"
             f"TXID: {txid}\n"
             f"Amount: {amount} USDT\n\n"
             f"— Vladislav\nDentalMeet\n"
@@ -469,18 +507,48 @@ def match_incoming_payment(tx: dict) -> dict:
     if not txid or txid in _processed_txids():
         return {"matched": False, "reason": "already_processed_or_no_txid"}
 
-    inv = _find_unpaid_by_amount(float(amount))
+    try:
+        amount_f = float(amount)
+    except (TypeError, ValueError):
+        return {"matched": False, "reason": "bad_amount"}
+
+    inv = _find_unpaid_by_amount(amount_f)
     if not inv:
         _mark_txid_processed(txid)
-        return {"matched": False, "reason": "no_invoice_for_amount", "amount": amount, "txid": txid}
+        _log_payment(
+            {
+                "txid": txid,
+                "amount": amount_f,
+                "from": tx.get("from") or "",
+                "timestamp": tx.get("timestamp"),
+                "status": "unknown",
+                "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            }
+        )
+        _send_alert(
+            f"Unknown payment of ${amount_f:,.2f} received",
+            (
+                f"Incoming USDT did not match any unpaid invoice.\n\n"
+                f"Amount: {amount_f} USDT\n"
+                f"From: {tx.get('from') or 'n/a'}\n"
+                f"TXID: {txid}\n"
+                f"Verify on TronScan and match manually if needed."
+            ),
+        )
+        return {
+            "matched": False,
+            "reason": "no_invoice_for_amount",
+            "amount": amount_f,
+            "txid": txid,
+        }
 
     expected = float(inv.get("amount") or 0)
     email = inv.get("client_email") or ""
     number = inv.get("invoice_number") or ""
 
-    if float(amount) < expected - AMOUNT_TOLERANCE:
-        _update_sheet_payment(email, "partial", txid=txid, amount=float(amount))
-        inv["partial_amount"] = float(amount)
+    if amount_f < expected - AMOUNT_TOLERANCE:
+        _update_sheet_payment(email, "partial", txid=txid, amount=amount_f)
+        inv["partial_amount"] = amount_f
         inv["partial_txid"] = txid
         data = _load_registry()
         _save_registry(data)
@@ -490,28 +558,73 @@ def match_incoming_payment(tx: dict) -> dict:
             email,
             f"Partial payment received — invoice #{number}",
             (
-                f"Hi,\n\nWe received {amount} USDT but invoice #{number} is for ${expected}.\n"
-                f"Please send the remaining ${expected - float(amount):.2f} USDT.\n\n"
+                f"Hi,\n\nWe received {amount_f} USDT but invoice #{number} is for ${expected}.\n"
+                f"Please send the remaining ${expected - amount_f:.2f} USDT.\n\n"
                 f"TXID: {txid}\nWallet: {_wallet()}\n\n— DentalMeet\n"
             ),
         )
         _mark_txid_processed(txid)
-        return {"matched": True, "status": "partial", "email": email, "amount": amount}
+        _log_payment(
+            {
+                "txid": txid,
+                "amount": amount_f,
+                "client_email": email,
+                "invoice_number": number,
+                "status": "partial",
+                "from": tx.get("from") or "",
+                "timestamp": tx.get("timestamp"),
+                "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            }
+        )
+        return {"matched": True, "status": "partial", "email": email, "amount": amount_f}
 
-    if float(amount) > expected + AMOUNT_TOLERANCE:
+    if amount_f > expected + AMOUNT_TOLERANCE:
         _send_alert(
             f"Overpayment: invoice #{number} ({email})",
-            f"Expected ${expected}, received {amount} USDT.\nTXID: {txid}\nManual review required.",
+            f"Expected ${expected}, received {amount_f} USDT.\nTXID: {txid}\nManual review required.",
         )
         _mark_txid_processed(txid)
-        return {"matched": True, "status": "overpayment", "email": email, "amount": amount}
+        _log_payment(
+            {
+                "txid": txid,
+                "amount": amount_f,
+                "client_email": email,
+                "invoice_number": number,
+                "status": "overpayment",
+                "from": tx.get("from") or "",
+                "timestamp": tx.get("timestamp"),
+                "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            }
+        )
+        return {"matched": True, "status": "overpayment", "email": email, "amount": amount_f}
 
     result = mark_invoice_as_paid(
         email,
         txid,
         invoice_date=inv.get("invoice_date") or "",
-        amount_override=float(amount),
+        amount_override=amount_f,
         skip_verify=True,
+    )
+    _log_payment(
+        {
+            "txid": txid,
+            "amount": amount_f,
+            "client_email": email,
+            "invoice_number": number,
+            "status": "paid",
+            "from": tx.get("from") or "",
+            "timestamp": tx.get("timestamp"),
+            "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+    )
+    _send_alert(
+        f"Payment received: ${amount_f:,.0f} from {email}",
+        (
+            f"Matched invoice #{number}.\n"
+            f"Amount: {amount_f} USDT\n"
+            f"Client: {email}\n"
+            f"TXID: {txid}\n"
+        ),
     )
     return {"matched": True, "status": "paid", "email": email, "result": result}
 
@@ -520,6 +633,7 @@ def poll_incoming_payments(limit: int = 20) -> dict:
     """Fetch recent incoming txs and auto-match to unpaid invoices."""
     txs = fetch_incoming_transactions(limit=limit)
     results = []
+    unknown = []
     for tx in txs:
         if not tx.get("confirmed", True):
             continue
@@ -527,7 +641,106 @@ def poll_incoming_payments(limit: int = 20) -> dict:
         if r.get("matched"):
             results.append(r)
             print(f"payment match: {r}")
-    return {"checked": len(txs), "matched": results}
+        elif r.get("reason") == "no_invoice_for_amount":
+            unknown.append(r)
+            print(f"unknown payment: {r}")
+    return {"checked": len(txs), "matched": results, "unknown": unknown}
+
+
+def payment_report() -> dict:
+    """Summary of pending invoices + received payments for CLI/CRM."""
+    registry = _load_registry()
+    log = _load_payments_log()
+    today = date.today()
+    month_start = today.replace(day=1).isoformat()
+
+    pending = [
+        inv
+        for inv in (registry.get("invoices") or [])
+        if (inv.get("status") or "").lower() == "unpaid"
+    ]
+    received = [
+        p
+        for p in (log.get("payments") or [])
+        if isinstance(p, dict) and (p.get("status") or "") in ("paid", "partial", "overpayment")
+    ]
+    # Also include paid invoices from registry if log is empty
+    paid_inv = [
+        {
+            "txid": inv.get("txid") or "",
+            "amount": inv.get("amount"),
+            "client_email": inv.get("client_email"),
+            "invoice_number": inv.get("invoice_number"),
+            "status": "paid",
+            "timestamp": inv.get("paid_date") or inv.get("invoice_date"),
+        }
+        for inv in (registry.get("invoices") or [])
+        if (inv.get("status") or "").lower() == "paid"
+    ]
+    if not received and paid_inv:
+        received = paid_inv
+
+    def _amt(x) -> float:
+        try:
+            return float(x.get("amount") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    month_rev = 0.0
+    all_time = 0.0
+    for p in received:
+        a = _amt(p)
+        all_time += a
+        ts = str(p.get("timestamp") or p.get("recorded_at") or p.get("paid_date") or "")
+        if ts[:10] >= month_start:
+            month_rev += a
+    for inv in paid_inv:
+        # avoid double-count if already in received with same txid
+        pass
+    # Prefer registry paid for all-time if log incomplete
+    reg_all = sum(
+        _amt(inv)
+        for inv in (registry.get("invoices") or [])
+        if (inv.get("status") or "").lower() == "paid"
+    )
+    reg_month = 0.0
+    for inv in registry.get("invoices") or []:
+        if (inv.get("status") or "").lower() != "paid":
+            continue
+        paid_raw = str(inv.get("paid_date") or inv.get("invoice_date") or "")
+        if paid_raw[:10] >= month_start:
+            reg_month += _amt(inv)
+
+    return {
+        "wallet": _wallet() or None,
+        "pending_invoices": pending,
+        "pending_total": round(sum(_amt(i) for i in pending), 2),
+        "received_payments": received[-50:],
+        "revenue_this_month": round(max(month_rev, reg_month), 2),
+        "revenue_all_time": round(max(all_time, reg_all), 2),
+        "checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+
+def print_payment_report() -> None:
+    data = payment_report()
+    print("=== USDT PAYMENT REPORT ===")
+    print(f"Wallet: {data.get('wallet') or '(not set)'}")
+    print(f"Pending invoices: {len(data.get('pending_invoices') or [])} "
+          f"(${data.get('pending_total', 0):,.2f})")
+    print(f"Revenue this month: ${data.get('revenue_this_month', 0):,.2f}")
+    print(f"Revenue all time:   ${data.get('revenue_all_time', 0):,.2f}")
+    print("Recent payments:")
+    payments = data.get("received_payments") or []
+    if not payments:
+        print("  (none yet)")
+    for p in payments[-20:]:
+        print(
+            f"  {p.get('status', '?'):10} ${float(p.get('amount') or 0):,.2f}  "
+            f"{p.get('client_email') or 'unknown'}  "
+            f"txid={(p.get('txid') or '')[:16]}…"
+        )
+    print("===========================")
 
 
 def simulate_payment_match(amount: float, client_email: str | None = None) -> dict:
@@ -713,12 +926,15 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("poll", help="Poll wallet for incoming USDT and auto-match")
     p_poll = sub.add_parser("poll_incoming", help="Alias for poll")
     p_poll.add_argument("--limit", type=int, default=20)
+    p_check = sub.add_parser("check", help="Poll for new USDT payments (alias of poll)")
+    p_check.add_argument("--limit", type=int, default=20)
 
     p_sim = sub.add_parser("simulate", help="Simulate incoming USDT tx for testing")
     p_sim.add_argument("amount", type=float)
     p_sim.add_argument("--email", default="", help="Optional client email hint")
 
     sub.add_parser("payment-status", help="Show all clients payment status")
+    sub.add_parser("report", help="Show pending invoices + payment history")
     sub.add_parser("reminders", help="Run full reminder schedule")
 
     args = parser.parse_args(argv)
@@ -740,7 +956,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd in ("check_overdue", "reminders"):
         print(json.dumps(run_payment_reminders(), indent=2))
         return 0
-    if args.cmd in ("poll", "poll_incoming"):
+    if args.cmd in ("poll", "poll_incoming", "check"):
         limit = getattr(args, "limit", 20)
         print(json.dumps(poll_incoming_payments(limit=limit), indent=2, default=str))
         return 0
@@ -755,6 +971,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "payment-status":
         print(json.dumps(payment_status_all(), indent=2))
+        return 0
+    if args.cmd == "report":
+        print_payment_report()
         return 0
     return 1
 

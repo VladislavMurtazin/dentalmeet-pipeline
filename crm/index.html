@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>DentalMeet CRM</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --card: #1a2332;
+      --border: #2d3a4f;
+      --text: #e8eef7;
+      --muted: #8b9cb3;
+      --accent: #3b82f6;
+      --green: #22c55e;
+      --amber: #f59e0b;
+      --red: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 1.5rem 1rem 3rem;
+    }
+    .container { max-width: 1280px; margin: 0 auto; }
+    h1 { font-size: 1.6rem; margin-bottom: 0.25rem; }
+    .sub { color: var(--muted); margin-bottom: 1.5rem; font-size: 0.875rem; }
+    .grid { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin-bottom: 1.5rem; }
+    .card {
+      background: var(--card);
+      border-radius: 10px;
+      padding: 1rem;
+      border: 1px solid var(--border);
+    }
+    .card h3 { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 0.35rem; }
+    .card .val { font-size: 1.45rem; font-weight: 700; }
+    .section { margin-bottom: 2rem; }
+    .section h2 { font-size: 1rem; margin-bottom: 0.75rem; color: var(--muted); }
+    .filters { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem; }
+    .filters select, .filters input {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.4rem 0.6rem;
+      border-radius: 6px;
+      font-size: 0.85rem;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; background: var(--card); border-radius: 10px; overflow: hidden; border: 1px solid var(--border); }
+    th, td { text-align: left; padding: 0.55rem 0.75rem; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 500; font-size: 0.7rem; text-transform: uppercase; cursor: pointer; user-select: none; }
+    th:hover { color: var(--text); }
+    tr.lead-row { cursor: pointer; }
+    tr.lead-row:hover { background: #243044; }
+    .badge {
+      display: inline-block;
+      padding: 0.15rem 0.45rem;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .badge-new { background: #334155; color: #cbd5e1; }
+    .badge-contacted { background: #1e3a5f; color: #93c5fd; }
+    .badge-replied { background: #422006; color: #fcd34d; }
+    .badge-interested { background: #14532d; color: #86efac; }
+    .badge-client { background: #312e81; color: #c4b5fd; }
+    .client-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; margin-bottom: 0.75rem; }
+    .client-card h4 { font-size: 0.95rem; margin-bottom: 0.25rem; }
+    .client-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.5rem; margin-top: 0.5rem; font-size: 0.8rem; color: var(--muted); }
+    .client-meta strong { color: var(--text); display: block; }
+    .ws-connected { color: var(--green); }
+    .ws-fallback { color: var(--amber); }
+    .err { background: #450a0a; color: #fecaca; padding: 1rem; border-radius: 8px; }
+    .alert { padding: 0.65rem 0.85rem; border-radius: 8px; margin-bottom: 0.5rem; font-size: 0.85rem; border: 1px solid var(--border); background: var(--card); }
+    .alert-critical { border-color: #7f1d1d; background: #450a0a; }
+    .alert-warning { border-color: #78350f; background: #422006; }
+    .charts { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+    .chart-box { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; }
+    .chart-box h3 { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.75rem; }
+    .bars { display: flex; align-items: flex-end; gap: 3px; height: 120px; }
+    .bar { flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; min-width: 2px; opacity: 0.85; }
+    .bar:hover { opacity: 1; }
+    .nav { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.25rem; }
+    .nav a { color: var(--muted); text-decoration: none; font-size: 0.8rem; padding: 0.3rem 0.55rem; border-radius: 6px; border: 1px solid transparent; }
+    .nav a:hover { color: var(--text); border-color: var(--border); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>DentalMeet CRM</h1>
+    <p class="sub" id="updated">Loading...</p>
+    <nav class="nav">
+      <a href="#overview">Overview</a>
+      <a href="#payments">Payments</a>
+      <a href="#clients">Clients</a>
+      <a href="#campaigns">Campaigns</a>
+      <a href="#leads">Leads</a>
+      <a href="#analytics">Analytics</a>
+      <a href="#alerts">Alerts</a>
+    </nav>
+
+    <div class="section" id="overview">
+      <h2>Overview</h2>
+      <div class="grid" id="overview-grid"></div>
+    </div>
+
+    <div class="section" id="payments">
+      <h2>USDT Payments</h2>
+      <div class="grid" id="payments-grid"></div>
+      <div class="charts" style="margin-top:1rem">
+        <div class="chart-box">
+          <h3>Pending invoices</h3>
+          <div id="pending-list" class="sub">—</div>
+        </div>
+        <div class="chart-box">
+          <h3>Recent payments</h3>
+          <div id="received-list" class="sub">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" id="clients">
+      <h2>Clients</h2>
+      <div id="clients-list"></div>
+    </div>
+
+    <div class="section" id="campaigns">
+      <h2>Campaigns</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Agency</th>
+            <th>Emails sent</th>
+            <th>Open rate</th>
+            <th>Reply rate</th>
+            <th>Meetings</th>
+          </tr>
+        </thead>
+        <tbody id="campaigns-body"></tbody>
+      </table>
+    </div>
+
+    <div class="section" id="leads">
+      <h2>Leads (Agencies)</h2>
+      <div class="filters">
+        <input type="search" id="f-search" placeholder="Search name, company, email…" />
+        <select id="f-status">
+          <option value="">All statuses</option>
+          <option value="new">New</option>
+          <option value="contacted">Contacted</option>
+          <option value="replied">Replied</option>
+          <option value="interested">Interested</option>
+          <option value="client">Client</option>
+        </select>
+        <select id="f-sort">
+          <option value="date">Sort: date</option>
+          <option value="name">Sort: name</option>
+          <option value="company">Sort: company</option>
+        </select>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th data-sort="name">Name</th>
+            <th data-sort="company">Company</th>
+            <th>Email</th>
+            <th data-sort="status">Status</th>
+            <th data-sort="date">Last contact</th>
+          </tr>
+        </thead>
+        <tbody id="leads-body"></tbody>
+      </table>
+    </div>
+
+    <div class="section" id="analytics">
+      <h2>Analytics</h2>
+      <div class="charts">
+        <div class="chart-box">
+          <h3>Sends over time (30d)</h3>
+          <div class="bars" id="chart-sends"></div>
+        </div>
+        <div class="chart-box">
+          <h3>Open rate trend</h3>
+          <div class="bars" id="chart-opens" style="--accent:#22c55e"></div>
+        </div>
+        <div class="chart-box">
+          <h3>Top templates</h3>
+          <div id="top-templates" class="sub">—</div>
+        </div>
+        <div class="chart-box">
+          <h3>Geographic breakdown</h3>
+          <div id="geo-breakdown" class="sub">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" id="alerts">
+      <h2>Alerts</h2>
+      <div id="alerts-list"></div>
+      <h2 style="margin-top:1.25rem">Account health</h2>
+      <div id="health-list" class="sub">—</div>
+    </div>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    const token = params.get("token");
+    const jsonUrl = token ? `/crm.json?token=${encodeURIComponent(token)}` : "/crm.json";
+
+    function fmtMoney(n) {
+      return "$" + Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
+    }
+    function badge(status) {
+      return `<span class="badge badge-${status || "new"}">${status || "—"}</span>`;
+    }
+    function card(label, value) {
+      return `<div class="card"><h3>${label}</h3><div class="val">${value}</div></div>`;
+    }
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[c]));
+    }
+
+    let allLeads = [];
+    let sortKey = "date";
+
+    function renderLeads() {
+      const status = document.getElementById("f-status").value;
+      const q = (document.getElementById("f-search").value || "").toLowerCase();
+      sortKey = document.getElementById("f-sort").value || sortKey;
+      let filtered = allLeads.filter((l) => {
+        if (status && l.status !== status) return false;
+        if (q) {
+          const blob = `${l.name || ""} ${l.company || ""} ${l.email || ""}`.toLowerCase();
+          if (!blob.includes(q)) return false;
+        }
+        return true;
+      });
+      filtered.sort((a, b) => {
+        if (sortKey === "name") return (a.name || "").localeCompare(b.name || "");
+        if (sortKey === "company") return (a.company || "").localeCompare(b.company || "");
+        return String(b.last_contact || b.date_added || "").localeCompare(String(a.last_contact || a.date_added || ""));
+      });
+      document.getElementById("leads-body").innerHTML = filtered.slice(0, 300).map((l) => `
+        <tr class="lead-row">
+          <td>${esc(l.name || "—")}</td>
+          <td>${esc(l.company || "—")}</td>
+          <td>${esc(l.email)}</td>
+          <td>${badge(l.status)}</td>
+          <td>${esc((l.last_contact || "—").toString().slice(0, 30))}</td>
+        </tr>`).join("") || `<tr><td colspan="5">No leads</td></tr>`;
+    }
+
+    function renderBars(elId, values, color) {
+      const el = document.getElementById(elId);
+      if (!values.length) { el.innerHTML = "<span class='sub'>No data</span>"; return; }
+      const max = Math.max(...values, 1);
+      el.innerHTML = values.map((v) =>
+        `<div class="bar" style="height:${Math.max(2, (v / max) * 100)}%;${color ? `background:${color}` : ""}" title="${v}"></div>`
+      ).join("");
+    }
+
+    async function load() {
+      try {
+        const res = await fetch(jsonUrl, { credentials: "same-origin" });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        document.getElementById("updated").textContent =
+          "Updated: " + (data.updated_at || "unknown") + " · private · refreshes hourly";
+
+        const o = data.overview || {};
+        document.getElementById("overview-grid").innerHTML = [
+          card("Total leads", o.total_leads ?? "—"),
+          card("Active clients", o.active_clients ?? o.clients ?? "—"),
+          card("Emails sent (month)", o.emails_sent_month ?? "—"),
+          card("Meetings (month)", o.meetings_booked_month ?? "—"),
+          card("Revenue (month)", fmtMoney(o.revenue_this_month ?? o.monthly_revenue)),
+        ].join("");
+
+        const p = data.payments || {};
+        document.getElementById("payments-grid").innerHTML = [
+          card("Pending invoices", fmtMoney(p.pending_total)),
+          card("Revenue this month", fmtMoney(p.revenue_this_month)),
+          card("Revenue all time", fmtMoney(p.revenue_all_time)),
+          card("Wallet", (p.wallet || "—").toString().slice(0, 10) + "…"),
+        ].join("");
+        document.getElementById("pending-list").innerHTML =
+          (p.pending_invoices || []).slice(0, 8).map((inv) =>
+            `<div>${esc(inv.client_email)} — ${fmtMoney(inv.amount)} due ${esc(inv.due_date || "—")}</div>`
+          ).join("") || "None unpaid";
+        document.getElementById("received-list").innerHTML =
+          (p.received_payments || []).slice(-8).reverse().map((pay) =>
+            `<div>${esc(pay.status)} ${fmtMoney(pay.amount)} ${esc(pay.client_email || "unknown")} ${(pay.txid || "").slice(0, 12)}</div>`
+          ).join("") || "No payments yet";
+
+        document.getElementById("clients-list").innerHTML = (data.clients || []).map((c) => {
+          const ws = (c.workspace_status || "").toLowerCase();
+          const wsClass = ws === "connected" ? "ws-connected" : "ws-fallback";
+          return `<div class="client-card">
+            <h4>${esc(c.company || c.name)} <span class="${wsClass}">(${esc(c.workspace_status || "unknown")})</span></h4>
+            <div class="client-meta">
+              <div><strong>Contact</strong>${esc(c.name || "—")}</div>
+              <div><strong>Campaign</strong>${esc(c.status || "—")}</div>
+              <div><strong>Meetings</strong>${c.meetings_this_month ?? 0}</div>
+              <div><strong>Revenue</strong>${fmtMoney(c.revenue_generated)}</div>
+              <div><strong>Next invoice</strong>${esc(c.next_invoice_date || "—")}</div>
+              <div><strong>Payment</strong>${esc(c.payment_status || "—")}</div>
+            </div>
+          </div>`;
+        }).join("") || "<p class='sub'>No active clients</p>";
+
+        document.getElementById("campaigns-body").innerHTML =
+          (data.campaigns || []).map((c) => `
+            <tr>
+              <td>${esc(c.company)}</td>
+              <td>${c.emails_sent ?? 0}</td>
+              <td>${c.open_rate ?? 0}%</td>
+              <td>${c.reply_rate ?? 0}%</td>
+              <td>${c.meetings_booked ?? 0}</td>
+            </tr>`).join("") || `<tr><td colspan="5">No campaign data</td></tr>`;
+
+        allLeads = data.leads || [];
+        renderLeads();
+
+        const series = (data.analytics && data.analytics.trends && data.analytics.trends.series) || [];
+        renderBars("chart-sends", series.map((d) => Number(d.emails_sent || 0)));
+        renderBars("chart-opens", series.map((d) => Number(d.open_rate || 0)), "#22c55e");
+        document.getElementById("top-templates").innerHTML =
+          (data.analytics?.top_templates || []).map((t) =>
+            `<div>${esc(t.template)} — sent ${t.emails_sent || 0}, reply ${t.reply_rate || 0}%</div>`
+          ).join("") || "No template stats";
+
+        const geoCounts = {};
+        allLeads.forEach((l) => {
+          const g = (l.geo || "Unknown").split(",")[0].trim() || "Unknown";
+          geoCounts[g] = (geoCounts[g] || 0) + 1;
+        });
+        document.getElementById("geo-breakdown").innerHTML =
+          Object.entries(geoCounts).sort((a, b) => b[1] - a[1]).slice(0, 10)
+            .map(([g, n]) => `<div>${esc(g)}: ${n}</div>`).join("") || "—";
+
+        const alerts = data.alerts?.recent || [];
+        document.getElementById("alerts-list").innerHTML =
+          alerts.map((a) =>
+            `<div class="alert alert-${esc(a.severity || "warning")}">${esc(a.message)}</div>`
+          ).join("") || "<p class='sub'>No active alerts</p>";
+
+        document.getElementById("health-list").innerHTML =
+          (data.alerts?.account_health || []).map((h) =>
+            `<div>${esc(h.email)} — health ${h.health_score} · today ${h.sent_today}/${h.limit}` +
+            (h.cooldown_until ? ` · cooldown ${esc(h.cooldown_until)}` : "") +
+            `</div>`
+          ).join("") || "No SMTP metrics yet";
+
+        const spamDays = data.alerts?.deliverability?.spam_days;
+        if (spamDays > 0) {
+          document.getElementById("alerts-list").insertAdjacentHTML(
+            "afterbegin",
+            `<div class="alert alert-critical">Deliverability: ${spamDays} day(s) with spam placements (last 30d)</div>`
+          );
+        }
+      } catch (e) {
+        document.getElementById("updated").innerHTML =
+          `<span class="err">Failed to load CRM: ${esc(e.message)}</span>`;
+      }
+    }
+
+    ["f-status", "f-sort"].forEach((id) => {
+      document.getElementById(id).addEventListener("change", renderLeads);
+    });
+    document.getElementById("f-search").addEventListener("input", renderLeads);
+    load();
+    setInterval(load, 3600000);
+  </script>
+</body>
+</html>

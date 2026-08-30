@@ -13,7 +13,8 @@ on:
     - cron: "0 9 * * 1"      # client weekly reports — Monday 09:00 UTC
     - cron: "30 9 * * 1"     # bounce_cleanup — Monday 09:30 UTC
     - cron: "15 9 * * *"     # pilot invoices — daily 09:15 UTC (3 weeks after start)
-    - cron: "0 10 * * *"     # payment check — daily 10:00 UTC
+    - cron: "0 10 * * *"     # payment reminders — daily 10:00 UTC
+    - cron: "5 * * * *"      # payment poll — hourly :05 (USDT check)
     - cron: "0 */4 * * *"    # warmup_send — every 4 hours
     - cron: "0 2-23/4 * * *" # warmup_process — 02,06,10,14,18,22 UTC
     - cron: "0 6 * * *"      # deliverability — daily 06:00 UTC
@@ -585,7 +586,10 @@ jobs:
   payment_check:
     name: payment_check
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 10 * * *') ||
+      (github.event_name == 'schedule' && (
+        github.event.schedule == '0 10 * * *' ||
+        github.event.schedule == '5 * * * *'
+      )) ||
       (github.event_name == 'workflow_dispatch' &&
         (github.event.inputs.job == 'payment_check' || github.event.inputs.job == 'all'))
     runs-on: ubuntu-latest
@@ -634,19 +638,27 @@ jobs:
           done
           exit "$missing"
 
-      - name: Check unpaid / overdue invoices and poll USDT
+      - name: Poll USDT (hourly) and run reminders (daily 10:00)
         run: |
           set -euo pipefail
           mkdir -p data/invoices
-          python -m delivery.payment_tracker poll_incoming
-          python -m delivery.payment_tracker reminders
+          python -m delivery.payment_tracker check
+          if [ "${{ github.event.schedule }}" = "0 10 * * *" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            python -m delivery.payment_tracker reminders
+          fi
+          python -m delivery.payment_tracker report
         env:
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
           SHEET_NAME: ${{ secrets.SHEET_NAME }}
           GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
+          SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          ALERT_FROM_EMAIL: ${{ secrets.ALERT_FROM_EMAIL }}
           TRC20_WALLET_ADDRESS: ${{ secrets.TRC20_WALLET_ADDRESS }}
           USDT_WALLET_TRC20: ${{ secrets.TRC20_WALLET_ADDRESS }}
+          USDT_WALLET_ADDRESS: ${{ secrets.TRC20_WALLET_ADDRESS }}
           GMAIL_TOKEN_FILE: gmail_token.json
           DRY_RUN: "false"
 
