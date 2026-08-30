@@ -119,6 +119,7 @@ AGENCY_DEFAULTS = {
     "calendly_url": CALENDLY_URL,
     "presentation_url": "",
     "form_url": "",
+    "case_study_blurb": "",
 }
 
 DENTAL_DEFAULTS = {
@@ -153,6 +154,7 @@ AGENCY_TEMPLATES: list[dict] = [
             "{presentation_url}\n\n"
             "Then fill out the short form:\n"
             "{form_url}\n\n"
+            "{case_study_blurb}"
             f"{AGENCY_SIGNATURE}"
         ),
         "requires": ("presentation_url", "form_url"),
@@ -171,6 +173,7 @@ AGENCY_TEMPLATES: list[dict] = [
             "{presentation_url}\n\n"
             "Ready to start? Fill out the form:\n"
             "{form_url}\n\n"
+            "{case_study_blurb}"
             f"{AGENCY_SIGNATURE}"
         ),
         "requires": ("presentation_url", "form_url"),
@@ -190,6 +193,7 @@ AGENCY_TEMPLATES: list[dict] = [
             "{presentation_url}\n\n"
             "Get started:\n"
             "{form_url}\n\n"
+            "{case_study_blurb}"
             f"{AGENCY_SIGNATURE}"
         ),
         "requires": ("presentation_url", "form_url"),
@@ -207,6 +211,7 @@ AGENCY_TEMPLATES: list[dict] = [
             "{presentation_url}\n\n"
             "Ready? Fill out the form:\n"
             "{form_url}\n\n"
+            "{case_study_blurb}"
             f"{AGENCY_SIGNATURE}"
         ),
         "requires": ("presentation_url", "form_url"),
@@ -225,6 +230,7 @@ AGENCY_TEMPLATES: list[dict] = [
             "{presentation_url}\n\n"
             "Get started:\n"
             "{form_url}\n\n"
+            "{case_study_blurb}"
             f"{AGENCY_SIGNATURE}"
         ),
         "requires": ("presentation_url", "form_url"),
@@ -241,6 +247,7 @@ AGENCY_TEMPLATES: list[dict] = [
             "{presentation_url}\n\n"
             "Then fill out the form:\n"
             "{form_url}\n\n"
+            "{case_study_blurb}"
             f"{AGENCY_SIGNATURE}"
         ),
         "requires": ("presentation_url", "form_url"),
@@ -259,6 +266,7 @@ AGENCY_TEMPLATES: list[dict] = [
             "{presentation_url}\n\n"
             "Ready to start?\n"
             "{form_url}\n\n"
+            "{case_study_blurb}"
             f"{AGENCY_SIGNATURE}"
         ),
         "requires": ("presentation_url", "form_url"),
@@ -275,6 +283,7 @@ AGENCY_TEMPLATES: list[dict] = [
             "{presentation_url}\n\n"
             "If it makes sense, fill out the form:\n"
             "{form_url}\n\n"
+            "{case_study_blurb}"
             f"{AGENCY_SIGNATURE}"
         ),
         "requires": ("presentation_url", "form_url"),
@@ -292,6 +301,7 @@ AGENCY_TEMPLATES: list[dict] = [
             "{presentation_url}\n\n"
             "Get started:\n"
             "{form_url}\n\n"
+            "{case_study_blurb}"
             f"{AGENCY_SIGNATURE}"
         ),
         "requires": ("presentation_url", "form_url"),
@@ -310,6 +320,7 @@ AGENCY_TEMPLATES: list[dict] = [
             "{presentation_url}\n\n"
             "Fill out the form to start:\n"
             "{form_url}\n\n"
+            "{case_study_blurb}"
             f"{AGENCY_SIGNATURE}"
         ),
         "requires": ("presentation_url", "form_url"),
@@ -595,6 +606,17 @@ def render_agency_template(template: dict, **kwargs) -> tuple[str, str]:
         values.get("form_url") or form_url(), tpl_id
     )
     values["calendly_url"] = values.get("calendly_url") or CALENDLY_URL
+    if "case_study_blurb" not in kwargs:
+        try:
+            from delivery.case_studies import next_case_study_blurb
+
+            blurb = (next_case_study_blurb() or "").strip()
+        except Exception:
+            blurb = ""
+        values["case_study_blurb"] = f"{blurb}\n\n" if blurb else ""
+    else:
+        blurb = (values.get("case_study_blurb") or "").strip()
+        values["case_study_blurb"] = f"{blurb}\n\n" if blurb else ""
 
     subject = _spice_subject(_safe_format(template["subject"], values))
     body = _safe_format(template["body"], values)

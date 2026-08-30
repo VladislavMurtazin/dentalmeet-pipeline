@@ -1,0 +1,48 @@
+{
+  "updated_at": "2026-08-30T13:47:18+00:00",
+  "social_proof": {
+    "agencies_count": 5,
+    "avg_meetings_per_month": 12.0,
+    "headline": "Trusted by 5+ marketing agencies",
+    "subheadline": "Average 12.0 meetings per client per month"
+  },
+  "case_studies": [
+    {
+      "id": "33140c74",
+      "slug": "typical-result",
+      "industry": "dental marketing",
+      "location": "the United States",
+      "duration": "2 months",
+      "meetings_booked": 12,
+      "emails_sent": 250,
+      "clients_acquired": 3,
+      "reply_rate": null,
+      "meeting_conversion": null,
+      "revenue_generated": "$4,500",
+      "roi": 6.0,
+      "quote": "We went from a handful of referrals to a steady calendar of qualified practice-owner meetings - without hiring SDRs.",
+      "prose": "A typical dental marketing agency in the United States partnered with DentalMeet and signed 3 new dental clients in 2 months after 12 qualified meetings \u2014 a typical mid-funnel result.",
+      "company": null,
+      "agency_name": null,
+      "key_metric": "Typical result: 3 new clients",
+      "url": "https://dentalmeet.agency/case-studies/typical-result",
+      "markdown": "# Typical Result: How an Agency Added 3 New Dental Clients in 2 months\n\n## Challenge\nA typical dental marketing agency in the United States specialized in dental marketing but struggled with\nlead generation. Their 5-10-person team spent 10 hours/week\non cold outreach with only 2 meetings/month.\n\n## Solution\nThey partnered with DentalMeet to automate their outreach. We\nidentified 200 verified dental practices in the US,\ncrafted personalized sequences, and delivered qualified meetings\ndirectly to their calendar.\n\n## Results\n- **200 dental practices contacted**\n- **12 qualified meetings booked**\n- **3 new clients signed**\n- **$4,500 in new annual revenue**\n- **6.0x ROI in first 45 days**\n\n## What They Said\n\"We went from a handful of referrals to a steady calendar of qualified practice-owner meetings - without hiring SDRs.\"\n- Agency founder (anonymized)\n\n## Ready for Similar Results?\n[Get Started](https://dentalmeet.agency/pilot)\n",
+      "owner_name": "Agency founder",
+      "title": "Founder"
+    }
+  ],
+  "highlights": [
+    {
+      "id": "33140c74",
+      "slug": "typical-result",
+      "industry": "dental marketing",
+      "location": "the United States",
+      "key_metric": "Typical result: 3 new clients",
+      "quote": "We went from a handful of referrals to a steady calendar of qualified practice-owner meetings - without hiring SDRs.",
+      "prose": "A typical dental marketing agency in the United States partnered with DentalMeet and signed 3 new dental clients in 2 months after 12 qualified meetings \u2014 a typical mid-funnel result.",
+      "url": "https://dentalmeet.agency/case-studies/typical-result",
+      "clients_acquired": 3,
+      "markdown": "# Typical Result: How an Agency Added 3 New Dental Clients in 2 months\n\n## Challenge\nA typical dental marketing agency in the United States specialized in dental marketing but struggled with\nlead generation. Their 5-10-person team spent 10 hours/week\non cold outreach with only 2 meetings/month.\n\n## Solution\nThey partnered with DentalMeet to automate their outreach. We\nidentified 200 verified dental practices in the US,\ncrafted personalized sequences, and delivered qualified meetings\ndirectly to their calendar.\n\n## Results\n- **200 dental practices contacted**\n- **12 qualified meetings booked**\n- **3 new clients signed**\n- **$4,500 in new annual revenue**\n- **6.0x ROI in first 45 days**\n\n## What They Said\n\"We went from a handful of referrals to a steady calendar of qualified practice-owner meetings - without hiring SDRs.\"\n- Agency founder (anonymized)\n\n## Ready for Similar Results?\n[Get Started](https://dentalmeet.agency/pilot)\n"
+    }
+  ]
+}

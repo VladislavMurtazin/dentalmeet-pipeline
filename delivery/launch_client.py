@@ -294,6 +294,12 @@ def launch_client(
             "running",
             f"campaign_started {date.today().isoformat()} sent={result['sent']}",
         )
+        try:
+            from .case_studies import record_campaign_start
+
+            record_campaign_start(email)
+        except Exception as e:
+            print(f"case study start_date skipped: {e}")
         result["status"] = "running"
         print(f"launch: sent {result['sent']} practice emails for {email}")
     except Exception as e:

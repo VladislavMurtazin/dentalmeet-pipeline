@@ -12,6 +12,7 @@ on:
     - cron: "30 */2 * * *"   # launch_pending — every 2 hours (:30)
     - cron: "0 9 * * 1"      # client weekly reports — Monday 09:00 UTC
     - cron: "30 9 * * 1"     # bounce_cleanup — Monday 09:30 UTC
+    - cron: "45 9 * * 1"     # case studies weekly — Monday 09:45 UTC
     - cron: "15 9 * * *"     # pilot invoices — daily 09:15 UTC (3 weeks after start)
     - cron: "0 10 * * *"     # payment reminders — daily 10:00 UTC
     - cron: "5 * * * *"      # payment poll — hourly :05 (USDT check)
@@ -49,6 +50,7 @@ on:
           - client_reports
           - calendar_sync
           - crm
+          - case_studies
           - all
 
 # Shared secrets for all jobs (per-job env can still override / extend).
@@ -1297,6 +1299,65 @@ jobs:
             data/crm.json
             data/case_studies.json
           key: crm-data-${{ github.repository }}-${{ github.run_id }}
+
+  case_studies:
+    name: case_studies
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '45 9 * * 1') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.job == 'case_studies' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore case study data
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/case_studies.json
+            data/case_studies
+            data/case_study_rotation.json
+          key: case-studies-${{ github.repository }}
+          restore-keys: |
+            case-studies-${{ github.repository }}-
+            case-studies-
+            crm-data-
+
+      - name: Weekly case study auto-generate
+        run: |
+          set -euo pipefail
+          mkdir -p data/case_studies
+          python -m delivery.case_studies weekly
+          python -m delivery.case_studies export
+        env:
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
+          SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+
+      - name: Persist case study data
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/case_studies.json
+            data/case_studies
+            data/case_study_rotation.json
+          key: case-studies-${{ github.repository }}-${{ github.run_id }}
 
   bounce_cleanup:
     name: bounce_cleanup

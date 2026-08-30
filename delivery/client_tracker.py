@@ -78,6 +78,18 @@ TRACKER_HEADERS = [
     "calendar_connected",
     "meetings_this_month",
     "next_meeting",
+    "start_date",
+    "emails_sent",
+    "meetings_booked",
+    "clients_acquired",
+    "avg_client_value",
+    "cost_paid_to_us",
+    "team_size",
+    "niche",
+    "case_study_generated",
+    "case_study_url",
+    "client_testimonial",
+    "testimonial_requested",
 ]
 
 
