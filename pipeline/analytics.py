@@ -381,6 +381,12 @@ def build_site_payload(data: dict | None = None) -> dict:
     data = data or load_analytics()
     today_key = _utc_today().isoformat()
     today = data.get("days", {}).get(today_key) or collect_day_metrics(today_key)
+    try:
+        from .deliverability_check import deliverability_trend
+
+        deliverability = deliverability_trend(30)
+    except Exception as e:
+        deliverability = {"error": str(e), "series": []}
     return {
         "updated_at": data.get("updated_at"),
         "today": today,
@@ -389,6 +395,7 @@ def build_site_payload(data: dict | None = None) -> dict:
         "trends": trends(30),
         "top_templates": top_templates(5),
         "bottom_templates": bottom_templates(5),
+        "deliverability": deliverability,
     }
 
 

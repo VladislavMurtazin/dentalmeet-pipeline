@@ -16,6 +16,7 @@ on:
     - cron: "0 10 * * *"     # payment check — daily 10:00 UTC
     - cron: "0 */4 * * *"    # warmup_send — every 4 hours
     - cron: "0 2-23/4 * * *" # warmup_process — 02,06,10,14,18,22 UTC
+    - cron: "0 6 * * *"      # deliverability — daily 06:00 UTC
     - cron: "0 20 * * *"     # daily_summary — 20:00 UTC
     - cron: "0 10 * * 1"     # client_reports — Monday 10:00 UTC
     - cron: "0 * * * *"      # calendar_sync + crm export — hourly
@@ -40,6 +41,7 @@ on:
           - warmup_send
           - warmup_process
           - warmup_stats
+          - deliverability
           - daily_summary
           - bounce_cleanup
           - backup
@@ -811,6 +813,93 @@ jobs:
         with:
           path: data/warmup_schedule.json
           key: warmup-schedule-${{ github.repository }}-${{ github.run_id }}
+
+  deliverability:
+    name: deliverability
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 6 * * *') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.job == 'deliverability' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore deliverability logs
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/deliverability_log.json
+            data/deliverability_weekly.json
+            data/deliverability_state.json
+            data/account_metrics.json
+            data/alert_state.json
+          key: deliverability-data-${{ github.repository }}
+          restore-keys: |
+            deliverability-data-${{ github.repository }}-
+            deliverability-data-
+
+      - name: Validate deliverability secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in SMTP_ACCOUNTS SMTP_APP_PASSWORDS; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret/env: $name"
+              missing=1
+            fi
+          done
+          if [ -z "${DELIVERABILITY_TEST_EMAIL:-}" ] && [ -z "${ALERT_IMAP_EMAIL:-}" ] && [ -z "${ALERT_EMAIL:-}" ]; then
+            echo "::error::Set DELIVERABILITY_TEST_EMAIL (or ALERT_IMAP_EMAIL / ALERT_EMAIL)"
+            missing=1
+          fi
+          if [ -z "${DELIVERABILITY_TEST_PASSWORD:-}" ] && [ -z "${ALERT_IMAP_PASSWORD:-}" ]; then
+            echo "::error::Set DELIVERABILITY_TEST_PASSWORD (or ALERT_IMAP_PASSWORD)"
+            missing=1
+          fi
+          exit "$missing"
+
+      - name: Run deliverability probe (daily; weekly on Sundays)
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          python -m pipeline.main deliverability-test --scheduled --wait 300
+        env:
+          SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
+          SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          DELIVERABILITY_TEST_EMAIL: ${{ secrets.DELIVERABILITY_TEST_EMAIL }}
+          DELIVERABILITY_TEST_PASSWORD: ${{ secrets.DELIVERABILITY_TEST_PASSWORD }}
+          DELIVERABILITY_OUTLOOK_EMAIL: ${{ secrets.DELIVERABILITY_OUTLOOK_EMAIL }}
+          DELIVERABILITY_OUTLOOK_PASSWORD: ${{ secrets.DELIVERABILITY_OUTLOOK_PASSWORD }}
+          DELIVERABILITY_YAHOO_EMAIL: ${{ secrets.DELIVERABILITY_YAHOO_EMAIL }}
+          DELIVERABILITY_YAHOO_PASSWORD: ${{ secrets.DELIVERABILITY_YAHOO_PASSWORD }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          ALERT_FROM_EMAIL: ${{ secrets.ALERT_FROM_EMAIL }}
+          ALERT_IMAP_EMAIL: ${{ secrets.ALERT_IMAP_EMAIL }}
+          ALERT_IMAP_PASSWORD: ${{ secrets.ALERT_IMAP_PASSWORD }}
+
+      - name: Persist deliverability logs
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/deliverability_log.json
+            data/deliverability_weekly.json
+            data/deliverability_state.json
+            data/account_metrics.json
+            data/alert_state.json
+          key: deliverability-data-${{ github.repository }}-${{ github.run_id }}
 
   daily_summary:
     name: daily_summary

@@ -19,6 +19,8 @@
   python -m pipeline.main daily_summary [--force]
   python -m pipeline.main alert-test [--times 3]
   python -m pipeline.main deliverability [--record inbox|spam]
+  python -m pipeline.main deliverability-test [--wait 300]
+  python -m pipeline.main deliverability-report [--days 30]
   python -m pipeline.main bounce scan|cleanup|stats|record|test EMAIL
   python -m pipeline.main queue-status
   python -m pipeline.main timezone-test --state CA [--email x@y.com]
@@ -337,6 +339,28 @@ def run_deliverability(_args: argparse.Namespace) -> None:
     print(json.dumps(result, ensure_ascii=False), flush=True)
 
 
+def run_deliverability_test_cmd(args: argparse.Namespace) -> None:
+    from .deliverability_check import run_daily_check, run_scheduled_check, run_weekly_deep_check
+
+    wait = getattr(args, "wait", 300)
+    if getattr(args, "weekly", False):
+        result = run_weekly_deep_check(wait_seconds=wait)
+    elif getattr(args, "scheduled", False):
+        result = run_scheduled_check(wait_seconds=wait)
+    else:
+        result = run_daily_check(
+            wait_seconds=wait,
+            skip_send=getattr(args, "skip_send", False),
+        )
+    print(json.dumps(result, ensure_ascii=False, default=str), flush=True)
+
+
+def run_deliverability_report(args: argparse.Namespace) -> None:
+    from .deliverability_check import print_deliverability_report
+
+    print_deliverability_report(days=getattr(args, "days", 30))
+
+
 def run_bounce(_args: argparse.Namespace) -> None:
     from .bounce_handler import (
         mark_bounced_leads_in_sheet,
@@ -528,6 +552,38 @@ def main() -> None:
     )
     p_deliv.add_argument("--no-imap", action="store_true", help="Send only; skip IMAP check")
 
+    p_dtest = sub.add_parser(
+        "deliverability-test",
+        help="Send probe from each SMTP account and check Inbox vs Spam",
+    )
+    p_dtest.add_argument(
+        "--wait",
+        type=int,
+        default=300,
+        help="Seconds to wait before IMAP check (default 300)",
+    )
+    p_dtest.add_argument(
+        "--skip-send",
+        action="store_true",
+        help="Only check IMAP for today's subjects (no send)",
+    )
+    p_dtest.add_argument(
+        "--weekly",
+        action="store_true",
+        help="Run multi-provider weekly deep check",
+    )
+    p_dtest.add_argument(
+        "--scheduled",
+        action="store_true",
+        help="Daily check + weekly deep check on Sundays",
+    )
+
+    p_drep = sub.add_parser(
+        "deliverability-report",
+        help="Show deliverability inbox/spam history",
+    )
+    p_drep.add_argument("--days", type=int, default=30)
+
     p_bounce = sub.add_parser("bounce", help="Bounce scan, cleanup, and stats")
     bounce_sub = p_bounce.add_subparsers(dest="bounce_cmd", required=True)
     p_b_scan = bounce_sub.add_parser("scan", help="Scan IMAP for bounce notifications")
@@ -664,6 +720,14 @@ def main() -> None:
 
     if args.command == "deliverability":
         run_monitored("deliverability", run_deliverability, args)
+        return
+
+    if args.command == "deliverability-test":
+        run_monitored("deliverability_test", run_deliverability_test_cmd, args)
+        return
+
+    if args.command == "deliverability-report":
+        run_deliverability_report(args)
         return
 
     if args.command == "bounce":
