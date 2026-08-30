@@ -208,6 +208,12 @@ def record_bounced_email(
     from .alerts import record_bounce
 
     record_bounce(1)
+    try:
+        from .send_throttle import record_bounce_for_recipient
+
+        record_bounce_for_recipient(addr)
+    except Exception as e:
+        print(f"account bounce metric skip: {e}")
     return True
 
 

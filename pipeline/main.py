@@ -10,6 +10,8 @@
   python -m pipeline.main replies --days 7
   python -m pipeline.main test-classify --text "yes, interested!"
   python -m pipeline.main reply-stats
+  python -m pipeline.main account-health
+  python -m pipeline.main throttle-status
   python -m pipeline.main check_forms
   python -m pipeline.main launch_pending
   python -m pipeline.main draft_reply EMAIL --body "their question"
@@ -178,6 +180,18 @@ def run_reply_stats(_args: argparse.Namespace) -> None:
     from .reply_classifier import print_reply_stats
 
     print_reply_stats()
+
+
+def run_account_health(_args: argparse.Namespace) -> None:
+    from .send_throttle import print_account_health
+
+    print_account_health()
+
+
+def run_throttle_status(_args: argparse.Namespace) -> None:
+    from .send_throttle import print_throttle_status
+
+    print_throttle_status()
 
 
 def run_check_forms(_args: argparse.Namespace) -> None:
@@ -480,6 +494,15 @@ def main() -> None:
     )
 
     sub.add_parser(
+        "account-health",
+        help="Show SMTP account health scores and 30d rates",
+    )
+    sub.add_parser(
+        "throttle-status",
+        help="Show per-account daily send limits and remaining capacity",
+    )
+
+    sub.add_parser(
         "check_forms",
         help="Ingest Google Form onboarding responses into Clients + auto-launch",
     )
@@ -589,6 +612,14 @@ def main() -> None:
 
     if args.command == "reply-stats":
         run_reply_stats(args)
+        return
+
+    if args.command == "account-health":
+        run_account_health(args)
+        return
+
+    if args.command == "throttle-status":
+        run_throttle_status(args)
         return
 
     if args.command == "check_forms":

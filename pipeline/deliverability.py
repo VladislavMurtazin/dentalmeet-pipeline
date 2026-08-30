@@ -117,6 +117,7 @@ def run_deliverability_test(*, check_imap: bool = True) -> dict:
         body,
         from_email=alert_from_email(),
         skip_unsubscribe=True,
+        skip_throttle=True,
     )
     result = {"sent": ok, "folder": None}
 

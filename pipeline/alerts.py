@@ -92,6 +92,7 @@ def send_alert(subject: str, body: str, severity: str = "info") -> bool:
         full_body,
         from_email=alert_from_email(),
         skip_unsubscribe=True,
+        skip_throttle=True,
     )
     if ok:
         print(f"alert sent → {to}: {subject}")

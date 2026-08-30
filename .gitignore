@@ -39,6 +39,7 @@ data/decline_counts.json
 data/ooo_followups.json
 data/reply_classification_stats.json
 data/manual_review/
+data/account_metrics.json
 data/reports/
 data/invoices/
 tokens/

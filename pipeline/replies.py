@@ -451,6 +451,13 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
             unmatched.append(addr)
             continue
 
+        try:
+            from .send_throttle import record_reply_for_recipient
+
+            record_reply_for_recipient(addr)
+        except Exception:
+            pass
+
         row_index = hit["row_index"]
         classification = classify_reply(body)
         reply_type = classification.get("category") or "other"

@@ -810,6 +810,7 @@ def send_warmup_emails() -> dict:
             body,
             from_email=sender,
             skip_unsubscribe=True,
+            skip_throttle=True,
             extra_headers={WARMUP_HEADER: header_val},
         )
         if ok:
@@ -1001,6 +1002,7 @@ def _process_account_inbox(
                         reply_body,
                         from_email=account_email,
                         skip_unsubscribe=True,
+                        skip_throttle=True,
                         extra_headers=extra,
                     )
 

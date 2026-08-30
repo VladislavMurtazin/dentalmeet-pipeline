@@ -1,7 +1,7 @@
-"""Send emails via Zoho Mail SMTP (SSL) with multi-account rotation.
+"""Send emails via Zoho Mail SMTP (SSL) with health-weighted account rotation.
 
 Transport: smtp.zoho.com:465 (SMTP_SSL only). No third-party relays.
-Accounts rotate sequentially: 1 → 2 → 3 → … → 1.
+Accounts are chosen by deliverability health score and daily throttle limits.
 """
 
 from __future__ import annotations
@@ -113,12 +113,11 @@ def _save_rotation_index(index: int, n: int) -> None:
 
 def _next_account(
     accounts: list[tuple[str, str]],
-) -> tuple[str, str, int]:
-    """Pick next account in rotation; return (email, password, index_used)."""
-    n = len(accounts)
-    idx = _load_rotation_index(n)
-    email, password = accounts[idx]
-    return email, password, idx
+) -> tuple[str, str, int] | None:
+    """Pick next healthy account under daily limit (weighted by health score)."""
+    from .send_throttle import select_next_account
+
+    return select_next_account(accounts)
 
 
 def _advance_rotation(used_index: int, n: int) -> None:
@@ -244,11 +243,13 @@ def send_email(
     *,
     from_email: str | None = None,
     skip_unsubscribe: bool = False,
+    skip_throttle: bool = False,
     extra_headers: dict[str, str] | None = None,
 ) -> bool:
-    """Send via Zoho SMTP with account rotation; retry next account on failure.
+    """Send via Zoho SMTP with health-weighted rotation; retry next account on failure.
 
     If ``from_email`` is set, send only from that account (no rotation failover).
+    ``skip_throttle`` bypasses daily limits (warmup / alerts).
     """
     to = (to or "").strip()
     subject = subject or ""
@@ -274,6 +275,8 @@ def send_email(
         )
         return False
 
+    from .send_throttle import is_account_available, record_send
+
     if from_email:
         match = next(
             ((i, e, p) for i, (e, p) in enumerate(accounts) if e.lower() == from_email),
@@ -283,6 +286,9 @@ def send_email(
             print(f"send_email error: from_email {from_email} not in SMTP_ACCOUNTS")
             return False
         idx, email, password = match
+        if not skip_throttle and not is_account_available(email):
+            print(f"send_email: fixed account {email} unavailable (limit/cooldown)")
+            return False
         if _dry_run():
             preview = _build_message(
                 to,
@@ -302,6 +308,8 @@ def send_email(
                 print(f"List-Unsubscribe-Post: {preview['List-Unsubscribe-Post']}")
             print(preview.get_payload()[0].get_payload(decode=True).decode("utf-8"))
             print("=== end DRY_RUN ===")
+            if not skip_throttle:
+                record_send(email, to)
             return True
         try:
             _send_via_zoho(
@@ -313,14 +321,46 @@ def send_email(
                 skip_unsubscribe=skip_unsubscribe,
                 extra_headers=extra_headers,
             )
+            if not skip_throttle:
+                record_send(email, to)
             print(f"sent via Zoho {email} (fixed account {idx + 1}/{len(accounts)})")
             return True
         except Exception as e:
             print(f"send_email Zoho fail fixed account {email}: {e}")
             return False
 
+    if skip_throttle:
+        # Fallback to sequential index for internal/warmup-style sends
+        n = len(accounts)
+        start = _load_rotation_index(n)
+        email, password = accounts[start]
+        idx = start
+        if _dry_run():
+            print(f"(DRY_RUN) skip_throttle from {email}")
+            _advance_rotation(idx, n)
+            return True
+        try:
+            _send_via_zoho(
+                to,
+                subject,
+                body_text,
+                email,
+                password,
+                skip_unsubscribe=skip_unsubscribe,
+                extra_headers=extra_headers,
+            )
+            _advance_rotation(idx, n)
+            print(f"sent via Zoho {email} (skip_throttle {idx + 1}/{n})")
+            return True
+        except Exception as e:
+            print(f"send_email Zoho fail skip_throttle {email}: {e}")
+            return False
+
     if _dry_run():
-        email, _, idx = _next_account(accounts)
+        picked = _next_account(accounts)
+        if not picked:
+            return False
+        email, _, idx = picked
         preview = _build_message(
             to,
             subject,
@@ -331,7 +371,7 @@ def send_email(
         )
         print("=== DRY_RUN email ===")
         print(f"Transport: Zoho SMTP_SSL {SMTP_SERVER}:{SMTP_PORT}")
-        print(f"From (rotated #{idx + 1}/{len(accounts)}): {email}")
+        print(f"From (weighted #{idx + 1}/{len(accounts)}): {email}")
         print(f"To: {to}")
         print(f"Subject: {subject}")
         if not skip_unsubscribe:
@@ -339,17 +379,37 @@ def send_email(
             print(f"List-Unsubscribe-Post: {preview['List-Unsubscribe-Post']}")
         print(preview.get_payload()[0].get_payload(decode=True).decode("utf-8"))
         print("=== end DRY_RUN ===")
+        record_send(email, to)
         _advance_rotation(idx, len(accounts))
         return True
 
     n = len(accounts)
-    start = _load_rotation_index(n)
     attempts = min(MAX_SEND_ATTEMPTS, n)
     last_err: Exception | None = None
+    tried: set[str] = set()
 
-    for attempt in range(attempts):
-        idx = (start + attempt) % n
-        email, password = accounts[idx]
+    for _attempt in range(attempts):
+        picked = _next_account(accounts)
+        if not picked:
+            return False
+        email, password, idx = picked
+        if email.lower() in tried:
+            # Avoid infinite same-pick loops; try sequential unused available
+            from .send_throttle import is_account_available as _avail
+
+            alt = next(
+                (
+                    (i, e, p)
+                    for i, (e, p) in enumerate(accounts)
+                    if e.lower() not in tried and _avail(e)
+                ),
+                None,
+            )
+            if not alt:
+                print("All accounts at capacity, queued for tomorrow")
+                return False
+            idx, email, password = alt
+        tried.add(email.lower())
         try:
             _send_via_zoho(
                 to,
@@ -360,6 +420,7 @@ def send_email(
                 skip_unsubscribe=skip_unsubscribe,
                 extra_headers=extra_headers,
             )
+            record_send(email, to)
             _advance_rotation(idx, n)
             print(f"sent via Zoho {email} (account {idx + 1}/{n})")
             return True
@@ -400,9 +461,19 @@ def send_batch(
 
     skipped_bounce: list[dict] = []
     skipped_timezone: list[dict] = []
+    skipped_throttle: list[dict] = []
     from .bounce_handler import check_recipient_sendable
+    from .send_throttle import any_account_available, refresh_account_limits
+
+    refresh_account_limits()
 
     for i, item in enumerate(batch):
+        if not any_account_available():
+            print("All accounts at capacity, queued for tomorrow")
+            rest = batch[i:]
+            skipped_throttle.extend(rest)
+            break
+
         to = (item.get("to") or "").strip()
         sendable, skip_reason = check_recipient_sendable(to)
         if not sendable:
@@ -440,6 +511,11 @@ def send_batch(
                 print(f"Selected {item['template_id']}")
             print(f"[{i + 1}/{len(batch)}] sent: {to}")
         else:
+            if not any_account_available():
+                print("All accounts at capacity, queued for tomorrow")
+                skipped_throttle.append(item)
+                skipped_throttle.extend(batch[i + 1 :])
+                break
             failed.append(item)
             print(f"[{i + 1}/{len(batch)}] failed: {to}")
 
@@ -451,4 +527,10 @@ def send_batch(
                 print(f"sleeping {delay}s before next send…")
                 time.sleep(delay)
 
-    return {"sent": sent, "failed": failed, "skipped_bounce": skipped_bounce, "skipped_timezone": skipped_timezone}
+    return {
+        "sent": sent,
+        "failed": failed,
+        "skipped_bounce": skipped_bounce,
+        "skipped_timezone": skipped_timezone,
+        "skipped_throttle": skipped_throttle,
+    }
