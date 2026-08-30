@@ -8,6 +8,8 @@
   python -m pipeline.main followup 2
   python -m pipeline.main replies
   python -m pipeline.main replies --days 7
+  python -m pipeline.main test-classify --text "yes, interested!"
+  python -m pipeline.main reply-stats
   python -m pipeline.main check_forms
   python -m pipeline.main launch_pending
   python -m pipeline.main draft_reply EMAIL --body "their question"
@@ -162,6 +164,20 @@ def run_replies(args: argparse.Namespace) -> None:
     from .replies import run_reply_check
 
     run_reply_check(days=args.days)
+
+
+def run_test_classify(args: argparse.Namespace) -> None:
+    from .reply_classifier import classify_reply
+
+    text = args.text or ""
+    result = classify_reply(text)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+
+
+def run_reply_stats(_args: argparse.Namespace) -> None:
+    from .reply_classifier import print_reply_stats
+
+    print_reply_stats()
 
 
 def run_check_forms(_args: argparse.Namespace) -> None:
@@ -452,6 +468,17 @@ def main() -> None:
         help="Look back N days in inbox (default 3)",
     )
 
+    p_tc = sub.add_parser(
+        "test-classify",
+        help="Classify a reply text (multilingual keyword detector)",
+    )
+    p_tc.add_argument("--text", required=True, help="Reply body to classify")
+
+    sub.add_parser(
+        "reply-stats",
+        help="Show reply classification breakdown by category/language",
+    )
+
     sub.add_parser(
         "check_forms",
         help="Ingest Google Form onboarding responses into Clients + auto-launch",
@@ -554,6 +581,14 @@ def main() -> None:
 
     if args.command == "replies":
         run_monitored("replies", run_replies, args)
+        return
+
+    if args.command == "test-classify":
+        run_test_classify(args)
+        return
+
+    if args.command == "reply-stats":
+        run_reply_stats(args)
         return
 
     if args.command == "check_forms":

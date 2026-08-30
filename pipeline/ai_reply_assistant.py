@@ -19,6 +19,7 @@ from .to_sheets import is_email
 ROOT = Path(__file__).resolve().parent.parent
 DRAFTS_DIR = ROOT / "data" / "drafts"
 SUPPRESSION_FILE = ROOT / "data" / "suppression.txt"
+DNC_FILE = ROOT / "data" / "do_not_contact.txt"
 
 DEFAULT_CALENDLY = "https://calendly.com/dentalmeet-agency/new-meeting/"
 
@@ -88,20 +89,10 @@ def _wallet() -> str:
 
 
 def classify_incoming_email(email_body: str) -> str:
-    """Categorize inbound message for routing."""
-    low = (email_body or "").lower()
+    """Categorize inbound message for routing (multilingual keyword classifier)."""
+    from .reply_classifier import classify_reply
 
-    if any(k in low for k in UNSUB_KW):
-        return "unsubscribe"
-    if any(k in low for k in NOT_INTERESTED_KW):
-        return "not_interested"
-    if any(k in low for k in PAYMENT_KW):
-        return "payment_question"
-    if any(k in low for k in INTERESTED_KW):
-        return "interested"
-    if "?" in (email_body or ""):
-        return "question"
-    return "question" if low.strip() else "other"
+    return classify_reply(email_body).get("category") or "other"
 
 
 def add_to_suppression(email_addr: str) -> None:
@@ -124,8 +115,41 @@ def add_to_suppression(email_addr: str) -> None:
     print(f"suppression: added {email_addr}")
 
 
+def add_to_do_not_contact(email_addr: str) -> None:
+    """Permanent do-not-contact after repeated declines; also suppress."""
+    email_addr = (email_addr or "").strip().lower()
+    if not is_email(email_addr):
+        return
+    DNC_FILE.parent.mkdir(parents=True, exist_ok=True)
+    existing = set()
+    if DNC_FILE.exists():
+        existing = {
+            line.strip().lower()
+            for line in DNC_FILE.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+    if email_addr not in existing:
+        with DNC_FILE.open("a", encoding="utf-8") as f:
+            f.write(email_addr + "\n")
+        print(f"Added to do_not_contact after 2nd decline: {email_addr}")
+    add_to_suppression(email_addr)
+
+
+def is_do_not_contact(email_addr: str) -> bool:
+    email_addr = (email_addr or "").strip().lower()
+    if not DNC_FILE.exists():
+        return False
+    return email_addr in {
+        line.strip().lower()
+        for line in DNC_FILE.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+
+
 def is_suppressed(email_addr: str) -> bool:
     email_addr = (email_addr or "").strip().lower()
+    if is_do_not_contact(email_addr):
+        return True
     if not SUPPRESSION_FILE.exists():
         return False
     return email_addr in {

@@ -1,0 +1,14 @@
+{
+  "interested": {
+    "subject": "Great! Here's everything you need",
+    "body": "Awesome, {name}!\n\nHere's our presentation and a quick form to get started:\n\nPresentation: {presentation_url}\nOnboarding form: {form_url}\n\nTakes about 2 minutes. Talk soon!\n\n— Vladislav\nDentalMeet\n"
+  },
+  "question": {
+    "subject": "Re: Your question",
+    "body": "Great question, {name}!\n\nHere's a detailed presentation that covers how DentalMeet works (and pricing):\n\n{presentation_url}\n\nWhen you're ready, the onboarding form is here:\n{form_url}\n\nIf you have more questions after reading, just reply — happy to help.\n\n— Vladislav\nDentalMeet\n"
+  },
+  "not_interested": {
+    "subject": "Understood! Here's info if you change your mind",
+    "body": "Thanks for letting me know, {name}. No pressure at all.\n\nI'll still share our presentation in case you want to learn more later:\n{presentation_url}\n\nAnd if anything changes, the form is here anytime:\n{form_url}\n\nWishing you all the best!\n\n— Vladislav\nDentalMeet\n"
+  }
+}

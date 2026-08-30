@@ -34,6 +34,11 @@ data/dry_run.json
 data/dry_run.json.txt
 data/drafts/
 data/suppression.txt
+data/do_not_contact.txt
+data/decline_counts.json
+data/ooo_followups.json
+data/reply_classification_stats.json
+data/manual_review/
 data/reports/
 data/invoices/
 tokens/
