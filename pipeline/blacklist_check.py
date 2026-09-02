@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 LOG_PATH = ROOT / "data" / "blacklist_log.json"
-DOMAIN = "dentalmeet.agency"
+DEFAULT_DOMAINS = ("dentalmeet.agency", "meet-agency.com")
 DNS_TIMEOUT_SEC = 2.0
 
 DNSBLS = [
@@ -101,7 +101,44 @@ def _reverse_ip(ip: str) -> str:
     return ".".join(reversed(parts))
 
 
-def run_blacklist_check(*, domain: str = DOMAIN, pause_on_hit: bool = True) -> dict:
+def domains_to_check() -> list[str]:
+    """Primary + backup from accounts.json, with safe defaults."""
+    try:
+        from .smtp_accounts import backup_domains, primary_domains
+
+        out: list[str] = []
+        for d in list(primary_domains()) + list(backup_domains()):
+            d = (d or "").strip().lower()
+            if d and d not in out:
+                out.append(d)
+        if out:
+            return out
+    except Exception:
+        pass
+    return list(DEFAULT_DOMAINS)
+
+
+def run_blacklist_check(*, domain: str | None = None, pause_on_hit: bool = True) -> dict:
+    """Check one domain, or all configured domains when domain is None."""
+    if domain:
+        return _check_one_domain(domain.strip().lower(), pause_on_hit=pause_on_hit)
+
+    results = []
+    any_listed = False
+    for d in domains_to_check():
+        entry = _check_one_domain(d, pause_on_hit=pause_on_hit)
+        results.append(entry)
+        if entry.get("listed"):
+            any_listed = True
+    return {
+        "checked_at": _utc_now().isoformat(timespec="seconds"),
+        "domains": [r.get("domain") for r in results],
+        "results": results,
+        "listed": any_listed,
+    }
+
+
+def _check_one_domain(domain: str, *, pause_on_hit: bool = True) -> dict:
     hits: list[dict] = []
     timeouts = 0
 
@@ -109,7 +146,7 @@ def run_blacklist_check(*, domain: str = DOMAIN, pause_on_hit: bool = True) -> d
         listed = _dns_lookup(f"{domain}.{zone}")
         if listed is None:
             timeouts += 1
-            print(f"blacklist timeout: {name}")
+            print(f"blacklist timeout: {name} ({domain})")
             continue
         if listed:
             hits.append({"type": "domain", "target": domain, "list": name, "zone": zone})
@@ -161,7 +198,7 @@ def run_blacklist_check(*, domain: str = DOMAIN, pause_on_hit: bool = True) -> d
         try:
             from .alerts import send_alert
 
-            send_alert(f"BLACKLIST ALERT: {lists}", body, severity="critical")
+            send_alert(f"BLACKLIST ALERT: {domain} in {lists}", body, severity="critical")
         except Exception as e:
             print(f"blacklist alert failed: {e}")
 
@@ -169,13 +206,13 @@ def run_blacklist_check(*, domain: str = DOMAIN, pause_on_hit: bool = True) -> d
             try:
                 from .email_validation import set_send_pause
 
-                set_send_pause(True, f"blacklist: {lists}")
+                set_send_pause(True, f"blacklist: {domain} → {lists}")
                 print("send_pause.json → paused=true")
             except Exception as e:
                 print(f"send pause failed: {e}")
     else:
         print(
-            f"blacklist ok: {domain} clean "
+            f"blacklist ok: {domain} not listed "
             f"(ips_checked={len(ips)}, timeouts={timeouts})"
         )
 
