@@ -318,11 +318,23 @@ jobs:
             printf '%s' "$GMAIL_TOKEN_JSON" > gmail_token.json
           fi
 
+      - name: Restore reply processing state
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/processed_replies.json
+            data/reply_inbox_failures.json
+            data/ooo_followups.json
+            data/decline_counts.json
+          key: replies-state-${{ github.repository }}
+          restore-keys: |
+            replies-state-
+
       - name: Validate required secrets
         run: |
           set -euo pipefail
           missing=0
-          for name in GOOGLE_SERVICE_ACCOUNT SHEET_NAME GMAIL_EMAIL GMAIL_APP_PASSWORD; do
+          for name in GOOGLE_SERVICE_ACCOUNT SHEET_NAME SMTP_ACCOUNTS SMTP_APP_PASSWORDS; do
             if [ -z "${!name}" ]; then
               echo "::error::Missing required secret/env: $name"
               missing=1
@@ -341,13 +353,29 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
           SHEET_NAME: ${{ secrets.SHEET_NAME }}
           WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
+          SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
+          SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          GOOGLE_SMTP_ACCOUNTS: ${{ secrets.GOOGLE_SMTP_ACCOUNTS }}
+          GOOGLE_SMTP_APP_PASSWORDS: ${{ secrets.GOOGLE_SMTP_APP_PASSWORDS }}
           GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           CALENDLY_URL: ${{ secrets.CALENDLY_URL }}
           PRESENTATION_URL: ${{ secrets.PRESENTATION_URL }}
           BRIEF_FORM_URL: ${{ secrets.BRIEF_FORM_URL }}
           TRC20_WALLET_ADDRESS: ${{ secrets.TRC20_WALLET_ADDRESS }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
           GMAIL_TOKEN_FILE: gmail_token.json
+
+      - name: Persist reply processing state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/processed_replies.json
+            data/reply_inbox_failures.json
+            data/ooo_followups.json
+            data/decline_counts.json
+          key: replies-state-${{ github.repository }}-${{ github.run_id }}
 
   check_forms:
     name: check_forms

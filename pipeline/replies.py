@@ -1,8 +1,13 @@
-"""Semi-automatic reply intake via Gmail IMAP → Pilot CRM / Agencies."""
+"""Reply intake via IMAP across all sending accounts → Pilot CRM / Agencies.
+
+Reads Zoho (dentalmeet.agency) and Google Workspace (meet-agency.com) inboxes,
+plus optional legacy GMAIL_EMAIL ops inbox. Warmup traffic is excluded.
+"""
 
 from __future__ import annotations
 
 import email
+import hashlib
 import imaplib
 import json
 import os
@@ -33,15 +38,10 @@ TEMPLATES_PATH = ROOT / "data" / "response_templates.json"
 DECLINE_PATH = ROOT / "data" / "decline_counts.json"
 OOO_PATH = ROOT / "data" / "ooo_followups.json"
 MANUAL_REVIEW_DIR = ROOT / "data" / "manual_review"
-
-
-def _creds() -> tuple[str, str]:
-    addr = os.environ.get("GMAIL_EMAIL", "").strip()
-    # App passwords are often copied with spaces: "xxxx xxxx xxxx xxxx"
-    password = os.environ.get("GMAIL_APP_PASSWORD", "").replace(" ", "").strip()
-    if not addr or not password:
-        raise RuntimeError("GMAIL_EMAIL and GMAIL_APP_PASSWORD must be set in .env")
-    return addr, password
+PROCESSED_PATH = ROOT / "data" / "processed_replies.json"
+INBOX_FAIL_PATH = ROOT / "data" / "reply_inbox_failures.json"
+MAX_PROCESSED_IDS = 5000
+FAIL_STREAK_ALERT = 3
 
 
 def _decode_header(value: str | None) -> str:
@@ -68,7 +68,6 @@ def _body_preview(msg: email.message.Message, limit: int = 300) -> str:
                     text = str(part.get_payload())
                 break
         if not text:
-            # Fall back to any text/html stripped roughly
             for part in msg.walk():
                 if part.get_content_type() == "text/html":
                     try:
@@ -104,96 +103,10 @@ def _is_bounce_notification(msg: email.message.Message) -> bool:
 
 
 def _is_reply(msg: email.message.Message) -> bool:
-    if msg.get("In-Reply-To"):
+    if msg.get("In-Reply-To") or msg.get("References"):
         return True
     subject = _decode_header(msg.get("Subject")).strip().lower()
-    return subject.startswith(SUBJECT_PREFIX)
-
-
-def fetch_recent_replies(days: int = 3) -> list[dict]:
-    """Fetch recent inbox replies via Gmail IMAP (last N days)."""
-    days = max(1, int(days))
-    user, password = _creds()
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%d-%b-%Y")
-
-    replies: list[dict] = []
-    mail = None
-    try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
-        mail.login(user, password)
-        mail.select("INBOX")
-
-        # SINCE is inclusive at day granularity
-        status, data = mail.search(None, f'(SINCE "{since}")')
-        if status != "OK":
-            print(f"IMAP search failed: {status}")
-            return []
-
-        ids = data[0].split() if data and data[0] else []
-        print(f"IMAP: {len(ids)} messages since {since}")
-
-        for num in ids:
-            try:
-                st, msg_data = mail.fetch(num, "(RFC822)")
-                if st != "OK" or not msg_data or not msg_data[0]:
-                    continue
-                raw = msg_data[0][1]
-                msg = email.message_from_bytes(raw)
-                if not _is_reply(msg) and not _is_bounce_notification(msg):
-                    continue
-
-                from_name, from_email = parseaddr(msg.get("From", ""))
-                from_email = (from_email or "").strip().lower()
-                if not is_email(from_email):
-                    continue
-                # Skip our own outbound copies
-                if from_email == user.lower():
-                    continue
-
-                received = ""
-                try:
-                    dt = parsedate_to_datetime(msg.get("Date"))
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
-                    received = dt.date().isoformat()
-                except Exception:
-                    received = ""
-
-                body = _body_preview(msg, 2000)
-                replies.append(
-                    {
-                        "from_email": from_email,
-                        "from_name": _decode_header(from_name) or from_name,
-                        "subject": _decode_header(msg.get("Subject")),
-                        "body_preview": body[:300],
-                        "body": body,
-                        "received_date": received,
-                    }
-                )
-            except Exception as e:
-                print(f"IMAP parse error for msg {num}: {e}")
-    except Exception as e:
-        print(f"IMAP connection error: {e}")
-        return []
-    finally:
-        if mail is not None:
-            try:
-                mail.logout()
-            except Exception:
-                pass
-
-    print(f"IMAP: {len(replies)} reply candidates")
-    return replies
-
-
-def _is_bounce_notification_from_text(from_email: str, subject: str, body: str) -> bool:
-    blob = f"{from_email} {subject} {body}".lower()
-    if "mailer-daemon" in blob or "postmaster" in blob:
-        return True
-    return any(
-        x in blob
-        for x in ("undeliverable", "delivery status", "mail delivery failed", "returned mail")
-    )
+    return subject.startswith(SUBJECT_PREFIX) or subject.startswith("re:")
 
 
 def _load_json(path: Path, default):
@@ -209,6 +122,354 @@ def _load_json(path: Path, default):
 def _save_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _processed_ids() -> set[str]:
+    data = _load_json(PROCESSED_PATH, {"ids": []})
+    ids = data.get("ids") if isinstance(data, dict) else []
+    return {str(x) for x in (ids or []) if x}
+
+
+def _mark_processed(message_ids: list[str]) -> None:
+    if not message_ids:
+        return
+    data = _load_json(PROCESSED_PATH, {"ids": []})
+    if not isinstance(data, dict):
+        data = {"ids": []}
+    existing = [str(x) for x in (data.get("ids") or []) if x]
+    seen = set(existing)
+    for mid in message_ids:
+        if mid and mid not in seen:
+            existing.append(mid)
+            seen.add(mid)
+    data["ids"] = existing[-MAX_PROCESSED_IDS:]
+    data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _save_json(PROCESSED_PATH, data)
+
+
+def _message_fingerprint(
+    *,
+    message_id: str,
+    from_email: str,
+    subject: str,
+    body: str,
+    received_at: str,
+) -> str:
+    mid = (message_id or "").strip()
+    if mid:
+        return mid
+    blob = f"{from_email}|{subject}|{body[:500]}|{received_at}"
+    return "hash:" + hashlib.sha256(blob.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _warmup_addrs() -> set[str]:
+    from .smtp_accounts import own_account_emails
+
+    addrs = set(own_account_emails())
+    gmail = os.environ.get("GMAIL_EMAIL", "").strip().lower()
+    if gmail:
+        addrs.add(gmail)
+    try:
+        from .warmup import load_external_recipients
+
+        for row in load_external_recipients():
+            e = (row.get("email") or "").strip().lower()
+            if e:
+                addrs.add(e)
+    except Exception:
+        pass
+    return addrs
+
+
+def _is_warmup_traffic(from_email: str, to_email: str, account_email: str) -> bool:
+    warm = _warmup_addrs()
+    fr = (from_email or "").strip().lower()
+    to = (to_email or "").strip().lower()
+    acc = (account_email or "").strip().lower()
+    if fr in warm:
+        return True
+    # Internal peer mail: both ends are our accounts
+    if fr in warm and (to in warm or acc in warm):
+        return True
+    return False
+
+
+def _extract_to_email(msg: email.message.Message, account_email: str) -> str:
+    for header in ("Delivered-To", "X-Original-To", "To"):
+        raw = msg.get(header)
+        if not raw:
+            continue
+        # To: can be a list of addresses
+        parts = email.utils.getaddresses([raw])
+        for _, addr in parts:
+            a = (addr or "").strip().lower()
+            if is_email(a):
+                return a
+    return (account_email or "").strip().lower()
+
+
+def _parse_message(
+    msg: email.message.Message,
+    *,
+    account_email: str,
+) -> dict | None:
+    from_name, from_email = parseaddr(msg.get("From", ""))
+    from_email = (from_email or "").strip().lower()
+    if not is_email(from_email) and not _is_bounce_notification(msg):
+        return None
+    if from_email == (account_email or "").strip().lower():
+        return None
+
+    to_email = _extract_to_email(msg, account_email)
+    received_at = ""
+    received_date = ""
+    try:
+        dt = parsedate_to_datetime(msg.get("Date"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        received_at = dt.isoformat()
+        received_date = dt.date().isoformat()
+    except Exception:
+        received_at = datetime.now(timezone.utc).isoformat()
+        received_date = datetime.now(timezone.utc).date().isoformat()
+
+    body = _body_preview(msg, 2000)
+    subject = _decode_header(msg.get("Subject"))
+    message_id = (msg.get("Message-ID") or msg.get("Message-Id") or "").strip()
+    in_reply_to = (msg.get("In-Reply-To") or "").strip()
+    references = (msg.get("References") or "").strip()
+    fingerprint = _message_fingerprint(
+        message_id=message_id,
+        from_email=from_email,
+        subject=subject,
+        body=body,
+        received_at=received_at,
+    )
+
+    is_warmup = _is_warmup_traffic(from_email, to_email, account_email)
+    return {
+        "from_email": from_email,
+        "from_name": _decode_header(from_name) or from_name,
+        "to_email": to_email,
+        "account_email": (account_email or "").strip().lower(),
+        "subject": subject,
+        "body_preview": body[:300],
+        "body": body,
+        "message_id": message_id or fingerprint,
+        "fingerprint": fingerprint,
+        "in_reply_to": in_reply_to,
+        "references": references,
+        "received_at": received_at,
+        "received_date": received_date,
+        "is_warmup": is_warmup,
+        "is_bounce": _is_bounce_notification(msg),
+    }
+
+
+def _imap_connect(acc: dict) -> imaplib.IMAP4_SSL:
+    host = str(acc.get("imap_server") or "imap.zoho.com")
+    port = int(acc.get("imap_port") or 993)
+    user = acc["email"]
+    password = acc["password"]
+    mail = imaplib.IMAP4_SSL(host, port)
+    mail.login(user, password)
+    return mail
+
+
+def _record_inbox_success(email_addr: str) -> None:
+    data = _load_json(INBOX_FAIL_PATH, {})
+    if not isinstance(data, dict):
+        data = {}
+    data[email_addr.lower()] = {
+        "consecutive_failures": 0,
+        "last_ok": datetime.now(timezone.utc).isoformat(),
+        "last_error": "",
+    }
+    _save_json(INBOX_FAIL_PATH, data)
+
+
+def _record_inbox_failure(email_addr: str, error: str) -> None:
+    data = _load_json(INBOX_FAIL_PATH, {})
+    if not isinstance(data, dict):
+        data = {}
+    key = email_addr.lower()
+    prev = data.get(key) if isinstance(data.get(key), dict) else {}
+    streak = int(prev.get("consecutive_failures") or 0) + 1
+    data[key] = {
+        "consecutive_failures": streak,
+        "last_error": str(error)[:500],
+        "last_fail": datetime.now(timezone.utc).isoformat(),
+        "last_ok": prev.get("last_ok") or "",
+    }
+    _save_json(INBOX_FAIL_PATH, data)
+    if streak >= FAIL_STREAK_ALERT:
+        try:
+            from .alerts import send_alert
+
+            send_alert(
+                f"Reply IMAP failing: {email_addr}",
+                f"{email_addr} failed IMAP {streak} runs in a row.\n\nLast error:\n{error}",
+                severity="warning",
+            )
+        except Exception as e:
+            print(f"inbox failure alert skipped: {e}")
+
+
+def fetch_inbox_replies(
+    acc: dict,
+    *,
+    days: int = 3,
+    processed: set[str] | None = None,
+) -> dict:
+    """
+    Fetch reply candidates from one account inbox.
+    Returns {account, connected, error, messages, new, lead_candidates, warmup_skipped}.
+    """
+    days = max(1, int(days))
+    account_email = acc["email"]
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%d-%b-%Y")
+    processed = processed if processed is not None else _processed_ids()
+    result = {
+        "account": account_email,
+        "provider": acc.get("provider") or "?",
+        "connected": False,
+        "error": "",
+        "messages": 0,
+        "new": 0,
+        "lead_candidates": [],
+        "warmup_skipped": 0,
+        "warmup_fingerprints": [],
+        "already_processed": 0,
+    }
+    mail = None
+    try:
+        mail = _imap_connect(acc)
+        mail.select("INBOX")
+        result["connected"] = True
+        status, data = mail.search(None, f'(SINCE "{since}")')
+        if status != "OK":
+            raise RuntimeError(f"IMAP search failed: {status}")
+        ids = data[0].split() if data and data[0] else []
+        result["messages"] = len(ids)
+
+        for num in ids:
+            try:
+                st, msg_data = mail.fetch(num, "(RFC822)")
+                if st != "OK" or not msg_data or not msg_data[0]:
+                    continue
+                raw = msg_data[0][1]
+                msg = email.message_from_bytes(raw)
+                if not _is_reply(msg) and not _is_bounce_notification(msg):
+                    continue
+                parsed = _parse_message(msg, account_email=account_email)
+                if not parsed:
+                    continue
+                fp = parsed["fingerprint"]
+                if fp in processed:
+                    result["already_processed"] += 1
+                    continue
+                result["new"] += 1
+                if parsed.get("is_warmup") and not parsed.get("is_bounce"):
+                    result["warmup_skipped"] += 1
+                    result.setdefault("warmup_fingerprints", []).append(fp)
+                    processed.add(fp)
+                    continue
+                result["lead_candidates"].append(parsed)
+                # Do not mark lead fps until CRM actions succeed
+            except Exception as e:
+                print(f"IMAP parse error {account_email} msg {num}: {e}")
+
+        _record_inbox_success(account_email)
+    except Exception as e:
+        result["error"] = str(e)
+        print(f"IMAP error for {account_email}: {e}")
+        _record_inbox_failure(account_email, str(e))
+    finally:
+        if mail is not None:
+            try:
+                mail.logout()
+            except Exception:
+                pass
+    return result
+
+
+def fetch_recent_replies(days: int = 3) -> list[dict]:
+    """Fetch recent replies from ALL enabled sending-account IMAP inboxes."""
+    from .smtp_accounts import load_reply_imap_accounts
+
+    accounts = load_reply_imap_accounts(with_password=True)
+    if not accounts:
+        print(
+            "fetch_recent_replies: no IMAP accounts with passwords "
+            "(set SMTP_* / GOOGLE_SMTP_* or per-account password_env)"
+        )
+        return []
+
+    processed = _processed_ids()
+    all_replies: list[dict] = []
+    warmup_fps: list[str] = []
+    print(f"IMAP: scanning {len(accounts)} inbox(es) (last {days} days)")
+
+    for acc in accounts:
+        info = fetch_inbox_replies(acc, days=days, processed=processed)
+        leads = info.get("lead_candidates") or []
+        warmup_fps.extend(info.get("warmup_fingerprints") or [])
+        status = "connected" if info["connected"] else f"FAILED ({info['error']})"
+        print(
+            f"  {info['account']}: {status}, "
+            f"{info['new']} new, {len(leads)} lead reply candidates "
+            f"(warmup skipped={info['warmup_skipped']})"
+        )
+        all_replies.extend(leads)
+
+    if warmup_fps:
+        _mark_processed(warmup_fps)
+
+    print(f"IMAP: {len(all_replies)} lead reply candidates across all inboxes")
+    return all_replies
+
+
+def diagnose_reply_inboxes(days: int = 3) -> list[dict]:
+    """Connect to each reply inbox and print a short status report."""
+    from .smtp_accounts import load_reply_imap_accounts
+
+    accounts = load_reply_imap_accounts(with_password=True)
+    processed = _processed_ids()
+    rows: list[dict] = []
+    print("=== REPLY INBOXES ===")
+    if not accounts:
+        print("(no IMAP accounts with passwords configured)")
+        print("=====================")
+        return rows
+
+    for acc in accounts:
+        # Copy processed set so diagnostics do not mark lead message IDs
+        info = fetch_inbox_replies(acc, days=days, processed=set(processed))
+        leads = len(info.get("lead_candidates") or [])
+        if info["connected"]:
+            line = (
+                f"{info['account']}: connected, "
+                f"{info['new']} new messages, {leads} lead "
+                f"{'reply' if leads == 1 else 'replies'}"
+            )
+            if info["warmup_skipped"]:
+                line += f" (warmup skipped={info['warmup_skipped']})"
+        else:
+            line = f"{info['account']}: FAILED — {info['error']}"
+        print(line)
+        rows.append(info)
+    print("=====================")
+    return rows
+
+
+def _is_bounce_notification_from_text(from_email: str, subject: str, body: str) -> bool:
+    blob = f"{from_email} {subject} {body}".lower()
+    if "mailer-daemon" in blob or "postmaster" in blob:
+        return True
+    return any(
+        x in blob
+        for x in ("undeliverable", "delivery status", "mail delivery failed", "returned mail")
+    )
 
 
 def load_response_templates() -> dict:
@@ -343,7 +604,7 @@ def process_due_ooo_followups() -> list[str]:
 
 
 def forward_to_manual_review(reply: dict, hit: dict | None) -> Path:
-    """Persist ambiguous replies for human review."""
+    """Persist ambiguous replies for human review and alert ALERT_EMAIL."""
     MANUAL_REVIEW_DIR.mkdir(parents=True, exist_ok=True)
     addr = (reply.get("from_email") or "unknown").strip().lower()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -351,9 +612,12 @@ def forward_to_manual_review(reply: dict, hit: dict | None) -> Path:
     path = MANUAL_REVIEW_DIR / f"{stamp}_{safe}.json"
     payload = {
         "email": addr,
+        "to_email": reply.get("to_email", ""),
+        "account_email": reply.get("account_email", ""),
         "subject": reply.get("subject", ""),
         "body": reply.get("body") or reply.get("body_preview") or "",
         "received_date": reply.get("received_date", ""),
+        "message_id": reply.get("message_id") or reply.get("fingerprint") or "",
         "lead": {
             "contact": (hit or {}).get("contact", ""),
             "company": (hit or {}).get("company", ""),
@@ -363,12 +627,33 @@ def forward_to_manual_review(reply: dict, hit: dict | None) -> Path:
     }
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"manual review queued → {path.name}")
+    try:
+        from .alerts import send_alert
+
+        body_snip = (reply.get("body") or reply.get("body_preview") or "")[:1500]
+        send_alert(
+            f"Manual review reply: {addr}",
+            (
+                f"From: {addr}\nTo/account: {reply.get('account_email')}\n"
+                f"Subject: {reply.get('subject')}\n\n{body_snip}\n\nSaved: {path}"
+            ),
+            severity="info",
+        )
+    except Exception as e:
+        print(f"manual review alert skipped: {e}")
     return path
 
 
 def _already_sent_response(hit: dict) -> bool:
     blob = f"{hit.get('meeting') or ''} {hit.get('notes') or ''}".lower()
     return "response_sent" in blob or "async_onboarding_sent" in blob
+
+
+def _match_lead_for_reply(reply: dict, by_email: dict[str, dict]) -> dict | None:
+    addr = (reply.get("from_email") or "").strip().lower()
+    if addr in by_email:
+        return by_email[addr]
+    return None
 
 
 def match_replies_to_leads(replies: list[dict]) -> dict:
@@ -415,40 +700,59 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
     responses_sent: list[str] = []
     manual_review: list[str] = []
     ooo_scheduled: list[str] = []
+    processed_fps: list[str] = []
 
-    seen: set[str] = set()
+    seen_sender: set[str] = set()
     for reply in replies:
-        addr = (reply.get("from_email") or "").strip().lower()
-        if not addr or addr in seen:
+        if reply.get("is_warmup"):
+            fp = reply.get("fingerprint") or reply.get("message_id") or ""
+            if fp:
+                processed_fps.append(fp)
+            skipped.append(reply.get("from_email") or "warmup")
             continue
-        seen.add(addr)
+
+        addr = (reply.get("from_email") or "").strip().lower()
+        fp = reply.get("fingerprint") or reply.get("message_id") or ""
+        if not addr:
+            continue
+        if addr in seen_sender:
+            if fp:
+                processed_fps.append(fp)
+            continue
+        seen_sender.add(addr)
 
         body = reply.get("body") or reply.get("body_preview") or ""
-        if _is_bounce_notification_from_text(addr, reply.get("subject", ""), body):
+        if reply.get("is_bounce") or _is_bounce_notification_from_text(
+            addr, reply.get("subject", ""), body
+        ):
             from .bounce_handler import extract_bounced_recipient, record_bounced_email
 
-            recipient = extract_bounced_recipient(
-                addr, reply.get("subject", ""), body
-            ) or addr
-            if record_bounced_email(recipient, source="gmail_replies"):
-                pass
+            recipient = (
+                extract_bounced_recipient(addr, reply.get("subject", ""), body) or addr
+            )
+            record_bounced_email(recipient, source="multi_inbox_replies")
             skipped.append(addr)
-            print(f"bounce detected: {recipient}")
+            if fp:
+                processed_fps.append(fp)
+            print(f"bounce detected: {recipient} (via {reply.get('account_email')})")
             continue
 
         if is_suppressed(addr):
             print(f"skip suppressed: {addr}")
             skipped.append(addr)
+            if fp:
+                processed_fps.append(fp)
             continue
 
-        hit = by_email.get(addr)
+        hit = _match_lead_for_reply(reply, by_email)
         if not hit:
-            # Still classify unmatched for manual review if not bounce
             classification = classify_reply(body)
             if classification.get("category") == "other":
                 forward_to_manual_review(reply, None)
                 manual_review.append(addr)
             unmatched.append(addr)
+            if fp:
+                processed_fps.append(fp)
             continue
 
         try:
@@ -464,6 +768,7 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
         first = (hit.get("contact") or "").split()[0] if hit.get("contact") else ""
         today = datetime.now(timezone.utc).date().isoformat()
         action = ""
+        account_tag = reply.get("account_email") or ""
 
         try:
             update_cell_safe(ws, row_index, REPLIED_COL, "yes")
@@ -471,7 +776,9 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
 
             if reply_type == "unsubscribe":
                 add_to_suppression(addr)
-                hit["notes"] = _append_note(ws, row_index, hit.get("notes") or "", f"unsubscribed {today}")
+                hit["notes"] = _append_note(
+                    ws, row_index, hit.get("notes") or "", f"unsubscribed {today}"
+                )
                 action = "suppressed"
 
             elif reply_type == "bounce":
@@ -502,7 +809,7 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
                             ws,
                             row_index,
                             hit.get("notes") or "",
-                            f"response_sent {reply_type} {today}",
+                            f"response_sent {reply_type} {today} via:{account_tag}",
                         )
                         responses_sent.append(addr)
                         onboarded.append(addr)
@@ -526,7 +833,6 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
                     else:
                         action = f"{action};decline:{declines}"
 
-                # Keep AI draft for questions as backup for human polish
                 if reply_type == "question":
                     draft = draft_reply(
                         body,
@@ -573,6 +879,9 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
             else:
                 action = "logged"
 
+            if fp:
+                processed_fps.append(fp)
+
             updated.append(
                 {
                     "email": addr,
@@ -580,6 +889,7 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
                     "reply_type": reply_type,
                     "language": classification.get("language"),
                     "subject": reply.get("subject", ""),
+                    "account_email": account_tag,
                     "notes": hit.get("notes") or "",
                     "previous_replied": hit["replied"],
                     "previous_type": hit["reply_type"],
@@ -590,6 +900,8 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
         except Exception as e:
             print(f"sheet update failed for {addr} row {row_index}: {e}")
             skipped.append(addr)
+
+    _mark_processed(processed_fps)
 
     return {
         "updated": updated,
@@ -606,7 +918,7 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
 
 
 def run_reply_check(days: int = 3) -> dict:
-    """Fetch recent replies and sync them into the sheet; print a report."""
+    """Fetch recent replies from all inboxes and sync them into the sheet."""
     print(f"=== reply check (last {days} days) ===")
     ooo_sent = process_due_ooo_followups()
     if ooo_sent:
@@ -641,9 +953,10 @@ def run_reply_check(days: int = 3) -> dict:
     print(f"leads updated: {len(summary['updated'])}")
     for u in summary["updated"]:
         lang = u.get("language") or "?"
+        via = u.get("account_email") or "?"
         print(
             f"  ✓ {u['email']} → type={u['reply_type']} lang={lang} "
-            f"action={u.get('action', '')} (row {u['row_index']})"
+            f"via={via} action={u.get('action', '')} (row {u['row_index']})"
         )
     if summary.get("responses_sent"):
         print(f"presentation+form responses sent: {len(summary['responses_sent'])}")

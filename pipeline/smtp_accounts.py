@@ -1,8 +1,10 @@
-"""Multi-provider SMTP account catalog (Zoho + Google Workspace).
+"""Multi-provider SMTP/IMAP account catalog (Zoho + Google Workspace).
 
-Passwords never live in accounts.json — resolve from env:
-  SMTP_ACCOUNTS + SMTP_APP_PASSWORDS          (Zoho / primary)
-  GOOGLE_SMTP_ACCOUNTS + GOOGLE_SMTP_APP_PASSWORDS  (meet-agency.com)
+Passwords never live in accounts.json — resolve from env, in order:
+  1. per-account password_env (e.g. ZOHO_HELLO_PASSWORD)
+  2. SMTP_ACCOUNTS + SMTP_APP_PASSWORDS
+  3. GOOGLE_SMTP_ACCOUNTS + GOOGLE_SMTP_APP_PASSWORDS
+  4. legacy single-account ZOHO_* / GMAIL_* vars
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ DEFAULT_ZOHO = {
     "smtp_port": 465,
     "imap_server": "imap.zoho.com",
     "imap_port": 993,
+    "imap_ssl": True,
     "enabled": True,
     "cold_ready": True,
     "warmup": True,
@@ -32,6 +35,7 @@ DEFAULT_GOOGLE = {
     "smtp_port": 465,
     "imap_server": "imap.gmail.com",
     "imap_port": 993,
+    "imap_ssl": True,
     "enabled": True,
     "cold_ready": False,
     "warmup": True,
@@ -40,6 +44,13 @@ DEFAULT_GOOGLE = {
 
 def _split_csv(raw: str) -> list[str]:
     return [p.strip() for p in (raw or "").split(",") if p.strip()]
+
+
+def _default_password_env(email: str, provider: str) -> str:
+    local = email.split("@", 1)[0].upper().replace(".", "_").replace("-", "_")
+    if provider == "google":
+        return f"GOOGLE_SMTP_{local}_PASSWORD"
+    return f"ZOHO_{local}_PASSWORD"
 
 
 def _password_map_from_env() -> dict[str, str]:
@@ -58,21 +69,28 @@ def _password_map_from_env() -> dict[str, str]:
     _ingest("SMTP_ACCOUNTS", "SMTP_APP_PASSWORDS")
     _ingest("GOOGLE_SMTP_ACCOUNTS", "GOOGLE_SMTP_APP_PASSWORDS")
 
-    # Single-account fallbacks
-    if not out:
-        single = (
-            os.environ.get("ZOHO_EMAIL", "").strip()
-            or os.environ.get("SMTP_EMAIL", "").strip()
-            or os.environ.get("GMAIL_EMAIL", "").strip()
-        )
-        pwd = (
-            os.environ.get("ZOHO_APP_PASSWORD", "").replace(" ", "").strip()
-            or os.environ.get("SMTP_APP_PASSWORD", "").replace(" ", "").strip()
-            or os.environ.get("GMAIL_APP_PASSWORD", "").replace(" ", "").strip()
-        )
-        if single and pwd:
+    # Legacy single-account fallbacks (also cover ops Gmail inbox)
+    for email_key, pwd_key in (
+        ("ZOHO_EMAIL", "ZOHO_APP_PASSWORD"),
+        ("SMTP_EMAIL", "SMTP_APP_PASSWORD"),
+        ("GMAIL_EMAIL", "GMAIL_APP_PASSWORD"),
+    ):
+        single = os.environ.get(email_key, "").strip()
+        pwd = os.environ.get(pwd_key, "").replace(" ", "").strip()
+        if single and pwd and single.lower() not in out:
             out[single.lower()] = pwd
     return out
+
+
+def resolve_account_password(acc: dict[str, Any], pwmap: dict[str, str] | None = None) -> str:
+    """Resolve app password for an account (password_env first, then CSV map)."""
+    env_key = (acc.get("password_env") or "").strip()
+    if env_key:
+        pwd = os.environ.get(env_key, "").replace(" ", "").strip()
+        if pwd:
+            return pwd
+    pwmap = pwmap if pwmap is not None else _password_map_from_env()
+    return pwmap.get((acc.get("email") or "").strip().lower(), "")
 
 
 def default_accounts_catalog() -> dict[str, Any]:
@@ -117,11 +135,14 @@ def _normalize_account(raw: dict) -> dict[str, Any] | None:
     base["email"] = email
     base["provider"] = provider
     base["domain"] = domain
-    base["smtp_port"] = int(base.get("smtp_port") or (465 if provider != "google" else 465))
+    base["smtp_port"] = int(base.get("smtp_port") or 465)
     base["imap_port"] = int(base.get("imap_port") or 993)
+    base["imap_ssl"] = bool(base.get("imap_ssl", True))
     base["enabled"] = bool(base.get("enabled", True))
     base["cold_ready"] = bool(base.get("cold_ready", provider != "google"))
     base["warmup"] = bool(base.get("warmup", True))
+    if not (base.get("password_env") or "").strip():
+        base["password_env"] = _default_password_env(email, provider)
     return base
 
 
@@ -150,9 +171,8 @@ def load_account_records(
         if warmup_only and not acc.get("warmup"):
             continue
         if with_password:
-            pwd = pwmap.get(acc["email"].lower(), "")
+            pwd = resolve_account_password(acc, pwmap)
             if not pwd:
-                # Allow catalog-only rows without password (skipped for send)
                 print(f"WARN: no app password in env for {acc['email']} — skipping")
                 continue
             acc["password"] = pwd
@@ -198,7 +218,7 @@ def load_warmup_smtp_accounts(*, allow_dry_run_placeholders: bool = False) -> li
     out: list[tuple[str, str]] = []
     for acc in catalog:
         email = acc["email"]
-        pwd = pwmap.get(email.lower(), "")
+        pwd = resolve_account_password(acc, pwmap)
         if pwd:
             out.append((email, pwd))
         elif allow_dry_run_placeholders:
@@ -212,6 +232,53 @@ def load_warmup_smtp_accounts(*, allow_dry_run_placeholders: bool = False) -> li
         (a["email"], a["password"])
         for a in load_account_records(warmup_only=True, cold_only=False, with_password=True)
     ]
+
+
+def own_account_emails() -> set[str]:
+    """All configured sending account addresses (lowercase)."""
+    return {
+        a["email"].lower()
+        for a in load_account_records(enabled_only=False, cold_only=False, with_password=False)
+    }
+
+
+def load_reply_imap_accounts(*, with_password: bool = True) -> list[dict[str, Any]]:
+    """
+    Enabled sending accounts for reply IMAP, plus optional legacy GMAIL_EMAIL inbox.
+    """
+    accounts = load_account_records(
+        enabled_only=True, cold_only=False, with_password=with_password
+    )
+    seen = {a["email"].lower() for a in accounts}
+
+    # Optional ops Gmail (historical reply landing) — not a cold sender in catalog
+    gmail = os.environ.get("GMAIL_EMAIL", "").strip()
+    if gmail and gmail.lower() not in seen:
+        pwd = ""
+        if with_password:
+            pwd = os.environ.get("GMAIL_APP_PASSWORD", "").replace(" ", "").strip()
+            if not pwd:
+                print(f"WARN: GMAIL_EMAIL set but GMAIL_APP_PASSWORD missing — skipping {gmail}")
+                return accounts
+        extra = {
+            "email": gmail,
+            "provider": "google",
+            "smtp_server": "smtp.gmail.com",
+            "smtp_port": 465,
+            "imap_server": "imap.gmail.com",
+            "imap_port": 993,
+            "imap_ssl": True,
+            "password_env": "GMAIL_APP_PASSWORD",
+            "enabled": True,
+            "cold_ready": False,
+            "warmup": False,
+            "domain": gmail.split("@", 1)[-1].lower(),
+            "legacy_ops_inbox": True,
+        }
+        if with_password:
+            extra["password"] = pwd
+        accounts.append(extra)
+    return accounts
 
 
 def get_account(email: str) -> dict[str, Any] | None:

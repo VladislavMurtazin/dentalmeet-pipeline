@@ -8,6 +8,7 @@
   python -m pipeline.main followup 2
   python -m pipeline.main replies
   python -m pipeline.main replies --days 7
+  python -m pipeline.main reply-inboxes
   python -m pipeline.main test-classify --text "yes, interested!"
   python -m pipeline.main reply-stats
   python -m pipeline.main account-health
@@ -168,6 +169,12 @@ def run_replies(args: argparse.Namespace) -> None:
     from .replies import run_reply_check
 
     run_reply_check(days=args.days)
+
+
+def run_reply_inboxes(args: argparse.Namespace) -> None:
+    from .replies import diagnose_reply_inboxes
+
+    diagnose_reply_inboxes(days=getattr(args, "days", 3))
 
 
 def run_test_classify(args: argparse.Namespace) -> None:
@@ -541,12 +548,26 @@ def main() -> None:
         help="Follow-up wave: 1 (3+ days) or 2 (7+ days)",
     )
 
-    p_replies = sub.add_parser("replies", help="Check Gmail IMAP for replies and update Sheet")
+    p_replies = sub.add_parser(
+        "replies",
+        help="Check all sending-account IMAP inboxes for replies and update Sheet",
+    )
     p_replies.add_argument(
         "--days",
         type=int,
         default=3,
         help="Look back N days in inbox (default 3)",
+    )
+
+    p_rin = sub.add_parser(
+        "reply-inboxes",
+        help="Diagnose IMAP connectivity for every reply inbox",
+    )
+    p_rin.add_argument(
+        "--days",
+        type=int,
+        default=3,
+        help="Look back N days when counting new messages (default 3)",
     )
 
     p_tc = sub.add_parser(
@@ -721,6 +742,10 @@ def main() -> None:
 
     if args.command == "replies":
         run_monitored("replies", run_replies, args)
+        return
+
+    if args.command == "reply-inboxes":
+        run_reply_inboxes(args)
         return
 
     if args.command == "test-classify":

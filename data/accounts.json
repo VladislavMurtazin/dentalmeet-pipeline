@@ -9,6 +9,8 @@
       "smtp_port": 465,
       "imap_server": "imap.zoho.com",
       "imap_port": 993,
+      "imap_ssl": true,
+      "password_env": "ZOHO_HELLO_PASSWORD",
       "enabled": true,
       "cold_ready": true,
       "warmup": true
@@ -20,6 +22,8 @@
       "smtp_port": 465,
       "imap_server": "imap.zoho.com",
       "imap_port": 993,
+      "imap_ssl": true,
+      "password_env": "ZOHO_VLAD_PASSWORD",
       "enabled": true,
       "cold_ready": true,
       "warmup": true
@@ -31,6 +35,8 @@
       "smtp_port": 465,
       "imap_server": "imap.zoho.com",
       "imap_port": 993,
+      "imap_ssl": true,
+      "password_env": "ZOHO_OUTREACH_PASSWORD",
       "enabled": true,
       "cold_ready": true,
       "warmup": true
@@ -42,6 +48,8 @@
       "smtp_port": 465,
       "imap_server": "imap.zoho.com",
       "imap_port": 993,
+      "imap_ssl": true,
+      "password_env": "ZOHO_FOUNDER_PASSWORD",
       "enabled": true,
       "cold_ready": true,
       "warmup": true
@@ -53,6 +61,8 @@
       "smtp_port": 465,
       "imap_server": "imap.zoho.com",
       "imap_port": 993,
+      "imap_ssl": true,
+      "password_env": "ZOHO_VLADISLAV_PASSWORD",
       "enabled": true,
       "cold_ready": true,
       "warmup": true
@@ -64,6 +74,8 @@
       "smtp_port": 465,
       "imap_server": "imap.gmail.com",
       "imap_port": 993,
+      "imap_ssl": true,
+      "password_env": "GOOGLE_SMTP_VLADISLAV_PASSWORD",
       "enabled": true,
       "cold_ready": false,
       "warmup": true
@@ -75,6 +87,8 @@
       "smtp_port": 465,
       "imap_server": "imap.gmail.com",
       "imap_port": 993,
+      "imap_ssl": true,
+      "password_env": "GOOGLE_SMTP_FOUNDER_PASSWORD",
       "enabled": true,
       "cold_ready": false,
       "warmup": true
@@ -86,6 +100,8 @@
       "smtp_port": 465,
       "imap_server": "imap.gmail.com",
       "imap_port": 993,
+      "imap_ssl": true,
+      "password_env": "GOOGLE_SMTP_OUTREACH_PASSWORD",
       "enabled": true,
       "cold_ready": false,
       "warmup": true
