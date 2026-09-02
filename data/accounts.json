@@ -75,7 +75,7 @@
       "imap_server": "imap.gmail.com",
       "imap_port": 993,
       "imap_ssl": true,
-      "password_env": "GOOGLE_SMTP_VLADISLAV_PASSWORD",
+      "password_env": "GOOGLE_SMTP_1",
       "enabled": true,
       "cold_ready": false,
       "warmup": true
@@ -88,7 +88,7 @@
       "imap_server": "imap.gmail.com",
       "imap_port": 993,
       "imap_ssl": true,
-      "password_env": "GOOGLE_SMTP_FOUNDER_PASSWORD",
+      "password_env": "GOOGLE_SMTP_2",
       "enabled": true,
       "cold_ready": false,
       "warmup": true
@@ -101,7 +101,7 @@
       "imap_server": "imap.gmail.com",
       "imap_port": 993,
       "imap_ssl": true,
-      "password_env": "GOOGLE_SMTP_OUTREACH_PASSWORD",
+      "password_env": "GOOGLE_SMTP_3",
       "enabled": true,
       "cold_ready": false,
       "warmup": true

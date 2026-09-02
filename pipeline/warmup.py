@@ -32,7 +32,8 @@ from .email_sender import load_smtp_accounts, send_email
 ROOT = Path(__file__).resolve().parent.parent
 SCHEDULE_PATH = ROOT / "data" / "warmup_schedule.json"
 EXTERNAL_PATH = ROOT / "data" / "external_recipients.json"
-EXTERNAL_RATIO = 0.30
+# 0 = internal-only (our accounts). Raise only for owned seed inboxes, never clients.
+EXTERNAL_RATIO = float(os.environ.get("WARMUP_EXTERNAL_RATIO", "0") or "0")
 
 IMAP_SERVER = os.environ.get("IMAP_SERVER", "imap.zoho.com").strip() or "imap.zoho.com"
 IMAP_PORT = int(os.environ.get("IMAP_PORT", "993") or "993")

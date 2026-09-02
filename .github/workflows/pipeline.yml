@@ -69,6 +69,9 @@ env:
   SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
   GOOGLE_SMTP_ACCOUNTS: ${{ secrets.GOOGLE_SMTP_ACCOUNTS }}
   GOOGLE_SMTP_APP_PASSWORDS: ${{ secrets.GOOGLE_SMTP_APP_PASSWORDS }}
+  GOOGLE_SMTP_1: ${{ secrets.GOOGLE_SMTP_1 }}
+  GOOGLE_SMTP_2: ${{ secrets.GOOGLE_SMTP_2 }}
+  GOOGLE_SMTP_3: ${{ secrets.GOOGLE_SMTP_3 }}
   ZEROBOUNCE_API_KEY: ${{ secrets.ZEROBOUNCE_API_KEY }}
   PRESENTATION_URL: ${{ secrets.PRESENTATION_URL }}
   BRIEF_FORM_URL: ${{ secrets.BRIEF_FORM_URL }}
@@ -357,6 +360,9 @@ jobs:
           SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
           GOOGLE_SMTP_ACCOUNTS: ${{ secrets.GOOGLE_SMTP_ACCOUNTS }}
           GOOGLE_SMTP_APP_PASSWORDS: ${{ secrets.GOOGLE_SMTP_APP_PASSWORDS }}
+          GOOGLE_SMTP_1: ${{ secrets.GOOGLE_SMTP_1 }}
+          GOOGLE_SMTP_2: ${{ secrets.GOOGLE_SMTP_2 }}
+          GOOGLE_SMTP_3: ${{ secrets.GOOGLE_SMTP_3 }}
           GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           CALENDLY_URL: ${{ secrets.CALENDLY_URL }}
@@ -756,9 +762,13 @@ jobs:
           SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
           GOOGLE_SMTP_ACCOUNTS: ${{ secrets.GOOGLE_SMTP_ACCOUNTS }}
           GOOGLE_SMTP_APP_PASSWORDS: ${{ secrets.GOOGLE_SMTP_APP_PASSWORDS }}
+          GOOGLE_SMTP_1: ${{ secrets.GOOGLE_SMTP_1 }}
+          GOOGLE_SMTP_2: ${{ secrets.GOOGLE_SMTP_2 }}
+          GOOGLE_SMTP_3: ${{ secrets.GOOGLE_SMTP_3 }}
           IMAP_SERVER: imap.zoho.com
           IMAP_PORT: "993"
           DRY_RUN: "false"
+          WARMUP_EXTERNAL_RATIO: "0"
 
       - name: Persist warmup schedule
         if: always()
@@ -819,6 +829,9 @@ jobs:
           SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
           GOOGLE_SMTP_ACCOUNTS: ${{ secrets.GOOGLE_SMTP_ACCOUNTS }}
           GOOGLE_SMTP_APP_PASSWORDS: ${{ secrets.GOOGLE_SMTP_APP_PASSWORDS }}
+          GOOGLE_SMTP_1: ${{ secrets.GOOGLE_SMTP_1 }}
+          GOOGLE_SMTP_2: ${{ secrets.GOOGLE_SMTP_2 }}
+          GOOGLE_SMTP_3: ${{ secrets.GOOGLE_SMTP_3 }}
           IMAP_SERVER: imap.zoho.com
           IMAP_PORT: "993"
           DRY_RUN: "false"
