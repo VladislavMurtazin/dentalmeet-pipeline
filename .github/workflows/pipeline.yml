@@ -19,6 +19,7 @@ on:
     - cron: "0 */4 * * *"    # warmup_send — every 4 hours
     - cron: "0 2-23/4 * * *" # warmup_process — 02,06,10,14,18,22 UTC
     - cron: "0 6 * * *"      # deliverability — daily 06:00 UTC
+    - cron: "0 3 * * 0"      # blacklist check — Sunday 03:00 UTC
     - cron: "0 20 * * *"     # daily_summary — 20:00 UTC
     - cron: "0 * * * *"      # calendar_sync + crm export — hourly
   workflow_dispatch:
@@ -43,6 +44,7 @@ on:
           - warmup_process
           - warmup_stats
           - deliverability
+          - blacklist_check
           - daily_summary
           - bounce_cleanup
           - backup
@@ -65,6 +67,9 @@ env:
   GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
   SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
   SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+  GOOGLE_SMTP_ACCOUNTS: ${{ secrets.GOOGLE_SMTP_ACCOUNTS }}
+  GOOGLE_SMTP_APP_PASSWORDS: ${{ secrets.GOOGLE_SMTP_APP_PASSWORDS }}
+  ZEROBOUNCE_API_KEY: ${{ secrets.ZEROBOUNCE_API_KEY }}
   PRESENTATION_URL: ${{ secrets.PRESENTATION_URL }}
   BRIEF_FORM_URL: ${{ secrets.BRIEF_FORM_URL }}
   CALENDLY_URL: ${{ secrets.CALENDLY_URL }}
@@ -721,6 +726,8 @@ jobs:
         env:
           SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
           SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          GOOGLE_SMTP_ACCOUNTS: ${{ secrets.GOOGLE_SMTP_ACCOUNTS }}
+          GOOGLE_SMTP_APP_PASSWORDS: ${{ secrets.GOOGLE_SMTP_APP_PASSWORDS }}
           IMAP_SERVER: imap.zoho.com
           IMAP_PORT: "993"
           DRY_RUN: "false"
@@ -782,6 +789,8 @@ jobs:
         env:
           SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
           SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          GOOGLE_SMTP_ACCOUNTS: ${{ secrets.GOOGLE_SMTP_ACCOUNTS }}
+          GOOGLE_SMTP_APP_PASSWORDS: ${{ secrets.GOOGLE_SMTP_APP_PASSWORDS }}
           IMAP_SERVER: imap.zoho.com
           IMAP_PORT: "993"
           DRY_RUN: "false"
@@ -837,6 +846,61 @@ jobs:
         with:
           path: data/warmup_schedule.json
           key: warmup-schedule-${{ github.repository }}-${{ github.run_id }}
+
+  blacklist_check:
+    name: blacklist_check
+    if: >
+      (github.event_name == 'schedule' && github.event.schedule == '0 3 * * 0') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.job == 'blacklist_check' || github.event.inputs.job == 'all'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore blacklist + pause state
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/blacklist_log.json
+            data/send_pause.json
+            data/alert_state.json
+          key: blacklist-data-${{ github.repository }}
+          restore-keys: |
+            blacklist-data-${{ github.repository }}-
+            blacklist-data-
+
+      - name: Run DNS blacklist check
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          python -m pipeline.main blacklist-check
+        env:
+          SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
+          SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          ALERT_FROM_EMAIL: ${{ secrets.ALERT_FROM_EMAIL }}
+
+      - name: Persist blacklist state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/blacklist_log.json
+            data/send_pause.json
+            data/alert_state.json
+          key: blacklist-data-${{ github.repository }}-${{ github.run_id }}
 
   deliverability:
     name: deliverability

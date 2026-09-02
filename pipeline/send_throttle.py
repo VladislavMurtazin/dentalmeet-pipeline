@@ -185,26 +185,31 @@ def get_account_metrics(account: str, last_30_days: int = 30) -> AccountMetrics:
 
 
 def get_daily_limit(account: str) -> int:
-    """Calculate safe daily limit based on account health."""
+    """Calculate safe daily limit based on account health / temperature."""
     metrics = get_account_metrics(account)
+    temp = calculate_health_score(metrics)
+    temp_cap = temperature_daily_cap(temp)
+    if temp_cap == 0 or metrics.in_cooldown:
+        return 0
+
     base_limit = BASE_DAILY_LIMIT
 
     # Reputation penalties (rates stored as percent)
     if metrics.spam_rate > HIGH_SPAM_PCT:  # >0.3% spam reports
-        return max(1, base_limit // 2)
+        return min(temp_cap, max(1, base_limit // 2))
 
     if metrics.bounce_rate > HIGH_BOUNCE_PCT:  # >2% bounces
-        return max(1, base_limit // 2)
+        return min(temp_cap, max(1, base_limit // 2))
 
     if metrics.open_rate > HEALTHY_OPEN_RATE and metrics.spam_rate < LOW_SPAM_PCT:
         # Healthy account, can scale up
-        return min(MAX_DAILY_LIMIT, base_limit + 5)
+        return min(temp_cap, MAX_DAILY_LIMIT, base_limit + 5)
 
     # Gradual scale for established accounts with decent volume and low bounce
     if metrics.sent_30d >= 50 and metrics.bounce_rate < 1.0 and metrics.spam_rate < LOW_SPAM_PCT:
-        return min(MAX_DAILY_LIMIT, base_limit + 3)
+        return min(temp_cap, MAX_DAILY_LIMIT, base_limit + 3)
 
-    return base_limit
+    return min(temp_cap, base_limit)
 
 
 def calculate_health_score(account_or_metrics: str | AccountMetrics) -> float:
@@ -296,13 +301,23 @@ def _maybe_alert_low_health(entry: dict, account: str, score: float) -> None:
 
 def refresh_account_limits() -> dict:
     """Recompute daily limits + auto-cooldown from bounce rate; persist summary."""
+    from .smtp_accounts import load_account_records, load_warmup_smtp_accounts
     from .email_sender import load_smtp_accounts
 
     store = _load_store()
     _prune_recipient_map(store)
     summary: dict[str, dict] = {}
 
-    for email, _ in load_smtp_accounts():
+    emails: list[str] = []
+    for acc in load_account_records(enabled_only=False, cold_only=False, with_password=False):
+        emails.append(acc["email"])
+    for e, _ in list(load_smtp_accounts(cold_only=False)) + list(
+        load_warmup_smtp_accounts(allow_dry_run_placeholders=True)
+    ):
+        if e not in emails:
+            emails.append(e)
+
+    for email in emails:
         key = email.lower()
         entry = _account_entry(store, key)
         _reset_daily_if_needed(entry)
@@ -555,29 +570,90 @@ def record_spam_complaint(account: str, recipient: str | None = None) -> None:
     _save_store(store)
 
 
+def print_account_temperature() -> None:
+    """CLI: temperature 0–100 with send band (wraps health score + limits)."""
+    from .email_sender import load_smtp_accounts
+
+    refresh_account_limits()
+    accounts = [e for e, _ in load_smtp_accounts()]
+    if not accounts:
+        print("No SMTP_ACCOUNTS configured")
+        return
+    print("Account temperature (0–100)")
+    print("-" * 60)
+    for email in accounts:
+        metrics = get_account_metrics(email)
+        temp = calculate_health_score(metrics)
+        limit = get_daily_limit(email)
+        if temp >= 90:
+            band = "normal"
+        elif temp >= 70:
+            band = "reduced"
+        elif temp >= 50:
+            band = "cautious"
+        else:
+            band = "cooldown/critical"
+        cd = metrics.cooldown_until or "-"
+        print(
+            f"{email}\n"
+            f"  temperature={temp}  band={band}  daily_limit={limit}  "
+            f"sent_today={metrics.sent_today}  "
+            f"bounce={metrics.bounce_rate}%  spam={metrics.spam_rate}%  "
+            f"cooldown={cd}"
+        )
+
+
+def temperature_daily_cap(temp: float) -> int:
+    """Map temperature to suggested daily cap (used by get_daily_limit)."""
+    if temp >= 90:
+        return MAX_DAILY_LIMIT
+    if temp >= 70:
+        return 10
+    if temp >= 50:
+        return 5
+    return 0
+
+
 def print_account_health() -> None:
+    from .smtp_accounts import load_account_records
+
     summary = refresh_account_limits()
+    records = load_account_records(enabled_only=False, cold_only=False, with_password=False)
     print("=== ACCOUNT HEALTH ===")
-    if not summary:
+    if not records and not summary:
         print("(no SMTP accounts configured)")
         print("======================")
         return
-    for email, row in sorted(summary.items(), key=lambda x: -x[1].get("health_score", 0)):
+    by_email = {r["email"].lower(): r for r in records}
+    # Prefer catalog order; only show historical metric emails that are still in catalog
+    emails = [r["email"] for r in records]
+    if not emails:
+        emails = sorted(summary.keys())
+    for email in emails:
+        row = summary.get(email) or {}
+        meta = by_email.get(email) or {}
         cd = row.get("cooldown_until") or "-"
         if cd != "-":
             try:
                 cd = datetime.fromisoformat(str(cd).replace("Z", "+00:00")).date().isoformat()
             except ValueError:
                 pass
+        provider = meta.get("provider") or "?"
+        cold = "cold_ready" if meta.get("cold_ready") else "warmup_only"
+        enabled = "on" if meta.get("enabled", True) else "off"
+        score = row.get("health_score")
+        if score is None:
+            score = calculate_health_score(email)
         print(
             f"{email}\n"
-            f"  health={row.get('health_score')}  "
-            f"limit={row.get('current_daily_limit')}  "
-            f"today={row.get('sent_today')}/{row.get('current_daily_limit')}  "
+            f"  provider={provider}  status={enabled}/{cold}  "
+            f"health={score}  "
+            f"limit={row.get('current_daily_limit', get_daily_limit(email))}  "
+            f"today={row.get('sent_today', 0)}  "
             f"cooldown={cd}\n"
-            f"  30d: sent={row.get('sent_30d')} open={row.get('open_rate')}% "
-            f"reply={row.get('reply_rate')}% bounce={row.get('bounce_rate')}% "
-            f"spam={row.get('spam_rate')}%"
+            f"  30d: sent={row.get('sent_30d', 0)} open={row.get('open_rate', 0)}% "
+            f"reply={row.get('reply_rate', 0)}% bounce={row.get('bounce_rate', 0)}% "
+            f"spam={row.get('spam_rate', 0)}%"
         )
     print("======================")
 

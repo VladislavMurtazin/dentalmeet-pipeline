@@ -196,6 +196,49 @@ def run_throttle_status(_args: argparse.Namespace) -> None:
     print_throttle_status()
 
 
+def run_account_temperature(_args: argparse.Namespace) -> None:
+    from .send_throttle import print_account_temperature
+
+    print_account_temperature()
+
+
+def run_blacklist_check(args: argparse.Namespace) -> None:
+    from .blacklist_check import print_recent, run_blacklist_check
+
+    if getattr(args, "history", False):
+        print_recent(int(getattr(args, "limit", 5) or 5))
+        return
+    result = run_blacklist_check(pause_on_hit=not getattr(args, "no_pause", False))
+    print(json.dumps(result, indent=2))
+
+
+def run_validate_email(args: argparse.Namespace) -> None:
+    from .email_validation import validate_recipient
+
+    meta = {}
+    if getattr(args, "verified", False):
+        meta["Verified"] = "yes"
+    result = validate_recipient(args.email, meta=meta, force=getattr(args, "force", False))
+    print(json.dumps(result, indent=2))
+
+
+def run_send_pause(args: argparse.Namespace) -> None:
+    from .email_validation import is_send_paused, set_send_pause
+
+    if args.action == "status":
+        paused, reason = is_send_paused()
+        print(json.dumps({"paused": paused, "reason": reason}, indent=2))
+        return
+    if args.action == "on":
+        set_send_pause(True, args.reason or "manual pause")
+        print("send paused")
+        return
+    if args.action == "off":
+        set_send_pause(False, "")
+        print("send pause cleared")
+        return
+
+
 def run_check_forms(_args: argparse.Namespace) -> None:
     from .async_onboarding import check_form_responses
 
@@ -522,9 +565,27 @@ def main() -> None:
         help="Show SMTP account health scores and 30d rates",
     )
     sub.add_parser(
+        "account-temperature",
+        help="Show account temperature 0-100 and send bands",
+    )
+    sub.add_parser(
         "throttle-status",
         help="Show per-account daily send limits and remaining capacity",
     )
+
+    p_bl = sub.add_parser("blacklist-check", help="Check domain/IPs on DNS blacklists")
+    p_bl.add_argument("--history", action="store_true", help="Show recent check log")
+    p_bl.add_argument("--limit", type=int, default=5)
+    p_bl.add_argument("--no-pause", action="store_true", help="Do not pause sends on hit")
+
+    p_val = sub.add_parser("validate-email", help="Validate one email (ZeroBounce / Apollo trust)")
+    p_val.add_argument("email")
+    p_val.add_argument("--verified", action="store_true", help="Treat as Apollo-verified")
+    p_val.add_argument("--force", action="store_true", help="Ignore cache")
+
+    p_pause = sub.add_parser("send-pause", help="Global outbound pause flag")
+    p_pause.add_argument("action", choices=["status", "on", "off"])
+    p_pause.add_argument("--reason", default="")
 
     sub.add_parser(
         "check_forms",
@@ -672,6 +733,22 @@ def main() -> None:
 
     if args.command == "account-health":
         run_account_health(args)
+        return
+
+    if args.command == "account-temperature":
+        run_account_temperature(args)
+        return
+
+    if args.command == "blacklist-check":
+        run_monitored("blacklist_check", run_blacklist_check, args)
+        return
+
+    if args.command == "validate-email":
+        run_validate_email(args)
+        return
+
+    if args.command == "send-pause":
+        run_send_pause(args)
         return
 
     if args.command == "throttle-status":

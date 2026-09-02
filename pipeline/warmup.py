@@ -304,21 +304,39 @@ def _resolve_alias(accounts: list[tuple[str, str]], alias: str) -> str | None:
 def ordered_warmup_accounts(
     accounts: list[tuple[str, str]] | None = None,
 ) -> list[tuple[str, str]]:
-    """Return the 5 accounts in canonical order, or [] if incomplete."""
-    accounts = accounts if accounts is not None else load_smtp_accounts()
+    """
+    Return warmup accounts: canonical Zoho 5 (if present) then Google backups.
+    Requires at least the 5 Zoho aliases when Zoho passwords are configured;
+    otherwise returns all warmup-enabled accounts with passwords.
+    """
+    from .smtp_accounts import load_warmup_smtp_accounts
+
+    if accounts is None:
+        accounts = load_warmup_smtp_accounts(
+            allow_dry_run_placeholders=_dry_run()
+        )
     by_email = {email.lower(): (email, pwd) for email, pwd in accounts}
+
     ordered: list[tuple[str, str]] = []
     for alias in ACCOUNT_ORDER:
         resolved = _resolve_alias(accounts, alias)
-        if not resolved:
-            return []
-        ordered.append(by_email[resolved.lower()])
-    if len(ordered) != REQUIRED_ACCOUNTS:
-        return []
-    # Safety: all distinct
-    if len({e.lower() for e, _ in ordered}) != REQUIRED_ACCOUNTS:
+        if resolved:
+            ordered.append(by_email[resolved.lower()])
+
+    # Append remaining warmup accounts (Google meet-agency.com, etc.)
+    seen = {e.lower() for e, _ in ordered}
+    for email, pwd in accounts:
+        if email.lower() not in seen:
+            ordered.append((email, pwd))
+            seen.add(email.lower())
+
+    if len(ordered) < 2:
         return []
     return ordered
+
+
+def warmup_account_count(accounts: list[tuple[str, str]] | None = None) -> int:
+    return len(ordered_warmup_accounts(accounts))
 
 
 def build_run_pairs(
@@ -338,10 +356,13 @@ def build_run_pairs(
     return pairs
 
 
-def pair_offset_for_total_sent(total_sent: int) -> int:
-    """Shift recipient index: run 1→+1, run 2→+2, … cycles every 4 runs."""
-    runs_done = max(0, int(total_sent)) // REQUIRED_ACCOUNTS
-    return (runs_done % (REQUIRED_ACCOUNTS - 1)) + 1
+def pair_offset_for_total_sent(total_sent: int, n_accounts: int | None = None) -> int:
+    """Shift recipient index: run 1→+1, run 2→+2, … cycles every (n-1) runs."""
+    n = int(n_accounts or REQUIRED_ACCOUNTS)
+    if n < 2:
+        return 1
+    runs_done = max(0, int(total_sent)) // n
+    return (runs_done % (n - 1)) + 1
 
 
 def _account_set(accounts: list[tuple[str, str]]) -> set[str]:
@@ -693,12 +714,13 @@ def _sleep(seconds: int, *, label: str) -> None:
 
 
 def send_warmup_emails() -> dict:
-    """One send run: 5 emails (one FROM each), ~70% internal / ~30% external."""
+    """One send run: one email FROM each warmup account (~70% internal / ~30% external)."""
     accounts = ordered_warmup_accounts()
-    if len(accounts) != REQUIRED_ACCOUNTS:
+    n_acc = len(accounts)
+    if n_acc < 2:
         print(
-            "warmup send error: need exactly 5 SMTP_ACCOUNTS matching "
-            f"{', '.join(ACCOUNT_ORDER)} (with SMTP_APP_PASSWORDS)"
+            "warmup send error: need at least 2 warmup SMTP accounts "
+            "(Zoho SMTP_ACCOUNTS and/or GOOGLE_SMTP_ACCOUNTS)"
         )
         return {
             "sent": 0,
@@ -709,6 +731,7 @@ def send_warmup_emails() -> dict:
         }
 
     emails = [e for e, _ in accounts]
+    print(f"warmup accounts ({n_acc}): {', '.join(emails)}")
     allowed_senders = set(a.lower() for a in emails)
     external = load_external_recipients()
 
@@ -744,11 +767,11 @@ def send_warmup_emails() -> dict:
             "external_sent": 0,
         }
 
-    offset = pair_offset_for_total_sent(int(schedule["total_sent"]))
+    offset = pair_offset_for_total_sent(int(schedule["total_sent"]), n_acc)
     internal_pairs = build_run_pairs(emails, offset=offset)
-    if len(internal_pairs) != REQUIRED_ACCOUNTS:
+    if len(internal_pairs) != n_acc:
         print(
-            f"warmup send error: expected {REQUIRED_ACCOUNTS} pairs, "
+            f"warmup send error: expected {n_acc} pairs, "
             f"got {len(internal_pairs)}"
         )
         return {
@@ -826,7 +849,7 @@ def send_warmup_emails() -> dict:
             schedule["last_send"] = _iso_now()
             tag = "EXTERNAL" if kind == "external" else "internal"
             print(
-                f"warmup sent [{sent}/5] [{tag}]: {sender} -> {recipient} "
+                f"warmup sent [{sent}/{n_acc}] [{tag}]: {sender} -> {recipient} "
                 f"| subject={subject!r}"
             )
         else:
@@ -903,7 +926,11 @@ def _ensure_folder(mail: imaplib.IMAP4_SSL, name: str) -> str:
 
 
 def _imap_connect(user: str, password: str) -> imaplib.IMAP4_SSL:
-    mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+    from .smtp_accounts import imap_endpoint
+
+    host, port = imap_endpoint(user)
+    print(f"warmup IMAP connect {user} via {host}:{port}")
+    mail = imaplib.IMAP4_SSL(host, port)
     mail.login(user, password)
     return mail
 
@@ -1049,14 +1076,14 @@ def _process_account_inbox(
 
 
 def process_warmup_inbox() -> dict:
-    """IMAP: read/star/reply/file unread peer mail across all 5 accounts."""
+    """IMAP: read/star/reply/file unread peer mail across all warmup accounts."""
     accounts = ordered_warmup_accounts()
-    if len(accounts) != REQUIRED_ACCOUNTS:
+    if len(accounts) < 2:
         print(
-            "warmup process error: need exactly 5 SMTP_ACCOUNTS matching "
-            f"{', '.join(ACCOUNT_ORDER)}"
+            "warmup process error: need at least 2 warmup SMTP accounts "
+            "(Zoho SMTP_ACCOUNTS and/or GOOGLE_SMTP_ACCOUNTS)"
         )
-        return {"replies": 0}
+        return {"replies": 0, "skipped": True}
 
     peers = _account_set(accounts)
     total = 0

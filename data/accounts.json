@@ -1,0 +1,94 @@
+{
+  "primary_domains": ["dentalmeet.agency"],
+  "backup_domains": ["meet-agency.com"],
+  "accounts": [
+    {
+      "email": "hello@dentalmeet.agency",
+      "provider": "zoho",
+      "smtp_server": "smtp.zoho.com",
+      "smtp_port": 465,
+      "imap_server": "imap.zoho.com",
+      "imap_port": 993,
+      "enabled": true,
+      "cold_ready": true,
+      "warmup": true
+    },
+    {
+      "email": "vlad@dentalmeet.agency",
+      "provider": "zoho",
+      "smtp_server": "smtp.zoho.com",
+      "smtp_port": 465,
+      "imap_server": "imap.zoho.com",
+      "imap_port": 993,
+      "enabled": true,
+      "cold_ready": true,
+      "warmup": true
+    },
+    {
+      "email": "outreach@dentalmeet.agency",
+      "provider": "zoho",
+      "smtp_server": "smtp.zoho.com",
+      "smtp_port": 465,
+      "imap_server": "imap.zoho.com",
+      "imap_port": 993,
+      "enabled": true,
+      "cold_ready": true,
+      "warmup": true
+    },
+    {
+      "email": "founder@dentalmeet.agency",
+      "provider": "zoho",
+      "smtp_server": "smtp.zoho.com",
+      "smtp_port": 465,
+      "imap_server": "imap.zoho.com",
+      "imap_port": 993,
+      "enabled": true,
+      "cold_ready": true,
+      "warmup": true
+    },
+    {
+      "email": "vladislav@dentalmeet.agency",
+      "provider": "zoho",
+      "smtp_server": "smtp.zoho.com",
+      "smtp_port": 465,
+      "imap_server": "imap.zoho.com",
+      "imap_port": 993,
+      "enabled": true,
+      "cold_ready": true,
+      "warmup": true
+    },
+    {
+      "email": "vladislav@meet-agency.com",
+      "provider": "google",
+      "smtp_server": "smtp.gmail.com",
+      "smtp_port": 465,
+      "imap_server": "imap.gmail.com",
+      "imap_port": 993,
+      "enabled": true,
+      "cold_ready": false,
+      "warmup": true
+    },
+    {
+      "email": "founder@meet-agency.com",
+      "provider": "google",
+      "smtp_server": "smtp.gmail.com",
+      "smtp_port": 465,
+      "imap_server": "imap.gmail.com",
+      "imap_port": 993,
+      "enabled": true,
+      "cold_ready": false,
+      "warmup": true
+    },
+    {
+      "email": "outreach@meet-agency.com",
+      "provider": "google",
+      "smtp_server": "smtp.gmail.com",
+      "smtp_port": 465,
+      "imap_server": "imap.gmail.com",
+      "imap_port": 993,
+      "enabled": true,
+      "cold_ready": false,
+      "warmup": true
+    }
+  ]
+}

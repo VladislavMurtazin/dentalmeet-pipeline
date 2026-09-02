@@ -1,7 +1,7 @@
-"""Send emails via Zoho Mail SMTP (SSL) with health-weighted account rotation.
+"""Send emails via Zoho / Google SMTP (SSL) with health-weighted rotation.
 
-Transport: smtp.zoho.com:465 (SMTP_SSL only). No third-party relays.
-Accounts are chosen by deliverability health score and daily throttle limits.
+Accounts come from data/accounts.json + env passwords.
+Cold sends use cold_ready accounts only; warmup uses all warmup accounts.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ MAX_PER_RUN = 12
 DELAY_MIN = 2
 DELAY_MAX = 10
 
-SMTP_SERVER = "smtp.zoho.com"
+SMTP_SERVER = "smtp.zoho.com"  # legacy default
 SMTP_PORT = 465  # SSL
 MAX_SEND_ATTEMPTS = 3
 
@@ -55,38 +55,11 @@ def _dry_run() -> bool:
     return os.environ.get("DRY_RUN", "").strip().lower() in ("1", "true", "yes")
 
 
-def _split_csv(raw: str) -> list[str]:
-    return [p.strip() for p in (raw or "").split(",") if p.strip()]
+def load_smtp_accounts(*, cold_only: bool = True) -> list[tuple[str, str]]:
+    """Return [(email, app_password), ...] — cold_ready by default."""
+    from .smtp_accounts import load_smtp_accounts as _load
 
-
-def load_smtp_accounts() -> list[tuple[str, str]]:
-    """Return [(email, app_password), ...] from env (same order)."""
-    emails = _split_csv(os.environ.get("SMTP_ACCOUNTS", ""))
-    passwords = _split_csv(os.environ.get("SMTP_APP_PASSWORDS", ""))
-
-    # Back-compat: single Zoho/Gmail-style vars
-    if not emails:
-        single = (
-            os.environ.get("ZOHO_EMAIL", "").strip()
-            or os.environ.get("SMTP_EMAIL", "").strip()
-            or os.environ.get("GMAIL_EMAIL", "").strip()
-        )
-        pwd = (
-            os.environ.get("ZOHO_APP_PASSWORD", "").replace(" ", "").strip()
-            or os.environ.get("SMTP_APP_PASSWORD", "").replace(" ", "").strip()
-            or os.environ.get("GMAIL_APP_PASSWORD", "").replace(" ", "").strip()
-        )
-        if single and pwd:
-            return [(single, pwd)]
-        return []
-
-    pairs: list[tuple[str, str]] = []
-    for i, email in enumerate(emails):
-        if i >= len(passwords):
-            print(f"WARN: no password for SMTP account {email} — skipping")
-            continue
-        pairs.append((email, passwords[i].replace(" ", "")))
-    return pairs
+    return _load(cold_only=cold_only)
 
 
 def _load_rotation_index(n: int) -> int:
@@ -212,7 +185,7 @@ def _build_message(
     return msg
 
 
-def _send_via_zoho(
+def _send_via_smtp(
     to: str,
     subject: str,
     body_text: str,
@@ -222,7 +195,11 @@ def _send_via_zoho(
     skip_unsubscribe: bool = False,
     extra_headers: dict[str, str] | None = None,
 ) -> None:
-    """Send one message through Zoho SMTP SSL (raises on failure)."""
+    """Send one message through account SMTP SSL (raises on failure)."""
+    from .smtp_accounts import smtp_endpoint
+
+    host, port, provider = smtp_endpoint(email)
+    print(f"Sending via {provider} for {email}")
     msg = _build_message(
         to,
         subject,
@@ -231,9 +208,14 @@ def _send_via_zoho(
         skip_unsubscribe=skip_unsubscribe,
         extra_headers=extra_headers,
     )
-    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
+    with smtplib.SMTP_SSL(host, port, timeout=30) as server:
         server.login(email, password)
         server.send_message(msg)
+
+
+# Back-compat alias
+def _send_via_zoho(*args, **kwargs) -> None:
+    _send_via_smtp(*args, **kwargs)
 
 
 def send_email(
@@ -260,6 +242,17 @@ def send_email(
         print("send_email error: empty recipient")
         return False
 
+    paused, pause_reason = False, ""
+    try:
+        from .email_validation import is_send_paused
+
+        paused, pause_reason = is_send_paused()
+    except Exception:
+        pass
+    if paused and not skip_throttle:
+        print(f"send_email blocked: {pause_reason}")
+        return False
+
     from .bounce_handler import check_recipient_sendable
 
     sendable, skip_reason = check_recipient_sendable(to)
@@ -267,15 +260,53 @@ def send_email(
         print(skip_reason)
         return False
 
-    accounts = load_smtp_accounts()
+    # Optional per-call validation meta via thread-local-ish env is awkward;
+    # batch path validates up front. Single send_email: validate unless skip.
+    if not skip_throttle and os.environ.get("SKIP_EMAIL_VALIDATION", "").strip().lower() not in (
+        "1",
+        "true",
+        "yes",
+    ):
+        try:
+            from .email_validation import validate_recipient
+
+            v = validate_recipient(to)
+            if not v.get("ok"):
+                print(
+                    f"send_email validation skip {to}: "
+                    f"{v.get('status')} ({v.get('source')})"
+                )
+                return False
+        except Exception as e:
+            print(f"validation check error (continuing): {e}")
+
+    accounts = load_smtp_accounts(cold_only=True)
+    if from_email or skip_throttle:
+        from .smtp_accounts import load_warmup_smtp_accounts
+
+        by = {e.lower(): (e, p) for e, p in accounts}
+        for e, p in load_warmup_smtp_accounts(
+            allow_dry_run_placeholders=_dry_run()
+        ):
+            by.setdefault(e.lower(), (e, p))
+        # Also include any cold accounts
+        for e, p in load_smtp_accounts(cold_only=False):
+            by.setdefault(e.lower(), (e, p))
+        accounts = list(by.values())
+    elif accounts:
+        from .smtp_accounts import filter_cold_accounts_for_send
+
+        accounts, _active_domain = filter_cold_accounts_for_send(accounts)
+
     if not accounts:
         print(
             "send_email error: set SMTP_ACCOUNTS + SMTP_APP_PASSWORDS "
-            "(comma-separated, same order)"
+            "(and optionally GOOGLE_SMTP_ACCOUNTS + GOOGLE_SMTP_APP_PASSWORDS)"
         )
         return False
 
     from .send_throttle import is_account_available, record_send
+    from .smtp_accounts import smtp_endpoint
 
     if from_email:
         match = next(
@@ -283,12 +314,13 @@ def send_email(
             None,
         )
         if not match:
-            print(f"send_email error: from_email {from_email} not in SMTP_ACCOUNTS")
+            print(f"send_email error: from_email {from_email} not in SMTP accounts")
             return False
         idx, email, password = match
         if not skip_throttle and not is_account_available(email):
             print(f"send_email: fixed account {email} unavailable (limit/cooldown)")
             return False
+        host, port, provider = smtp_endpoint(email)
         if _dry_run():
             preview = _build_message(
                 to,
@@ -299,7 +331,7 @@ def send_email(
                 extra_headers=extra_headers,
             )
             print("=== DRY_RUN email ===")
-            print(f"Transport: Zoho SMTP_SSL {SMTP_SERVER}:{SMTP_PORT}")
+            print(f"Transport: {provider} SMTP_SSL {host}:{port}")
             print(f"From (fixed): {email}")
             print(f"To: {to}")
             print(f"Subject: {subject}")
@@ -312,7 +344,7 @@ def send_email(
                 record_send(email, to)
             return True
         try:
-            _send_via_zoho(
+            _send_via_smtp(
                 to,
                 subject,
                 body_text,
@@ -323,10 +355,10 @@ def send_email(
             )
             if not skip_throttle:
                 record_send(email, to)
-            print(f"sent via Zoho {email} (fixed account {idx + 1}/{len(accounts)})")
+            print(f"sent via {provider} {email} (fixed account {idx + 1}/{len(accounts)})")
             return True
         except Exception as e:
-            print(f"send_email Zoho fail fixed account {email}: {e}")
+            print(f"send_email {provider} fail fixed account {email}: {e}")
             return False
 
     if skip_throttle:
@@ -340,7 +372,7 @@ def send_email(
             _advance_rotation(idx, n)
             return True
         try:
-            _send_via_zoho(
+            _send_via_smtp(
                 to,
                 subject,
                 body_text,
@@ -350,7 +382,7 @@ def send_email(
                 extra_headers=extra_headers,
             )
             _advance_rotation(idx, n)
-            print(f"sent via Zoho {email} (skip_throttle {idx + 1}/{n})")
+            print(f"sent via SMTP {email} (skip_throttle {idx + 1}/{n})")
             return True
         except Exception as e:
             print(f"send_email Zoho fail skip_throttle {email}: {e}")
@@ -411,7 +443,7 @@ def send_email(
             idx, email, password = alt
         tried.add(email.lower())
         try:
-            _send_via_zoho(
+            _send_via_smtp(
                 to,
                 subject,
                 body_text,
@@ -422,12 +454,12 @@ def send_email(
             )
             record_send(email, to)
             _advance_rotation(idx, n)
-            print(f"sent via Zoho {email} (account {idx + 1}/{n})")
+            print(f"sent via SMTP {email} (account {idx + 1}/{n})")
             return True
         except Exception as e:
             last_err = e
             print(
-                f"send_email Zoho fail account {idx + 1}/{n} ({email}): {e} "
+                f"send_email SMTP fail account {idx + 1}/{n} ({email}): {e} "
                 f"— trying next"
             )
 
@@ -467,6 +499,25 @@ def send_batch(
 
     refresh_account_limits()
 
+    # Pre-validate recipients (Apollo verified trusted; else ZeroBounce)
+    from .email_validation import is_send_paused, validate_batch
+
+    paused, pause_reason = is_send_paused()
+    if paused:
+        print(f"send_batch blocked: {pause_reason}")
+        return {
+            "sent": [],
+            "failed": [],
+            "skipped_bounce": [],
+            "skipped_timezone": [],
+            "skipped_throttle": list(batch),
+            "skipped_validation": [],
+        }
+
+    vresult = validate_batch(batch)
+    skipped_validation = list(vresult.get("skipped") or [])
+    batch = list(vresult.get("allowed") or [])
+
     for i, item in enumerate(batch):
         if not any_account_available():
             print("All accounts at capacity, queued for tomorrow")
@@ -495,12 +546,16 @@ def send_batch(
         subject = item.get("subject") or ""
         body = item.get("body") or ""
 
+        # Avoid double ZeroBounce inside send_email for already-validated batch
+        os.environ["SKIP_EMAIL_VALIDATION"] = "1"
         ok = False
         try:
             ok = send_email(to, subject, body)
         except Exception as e:
             print(f"send_batch unexpected error for {to}: {e}")
             ok = False
+        finally:
+            os.environ.pop("SKIP_EMAIL_VALIDATION", None)
 
         if ok:
             sent.append(item)
@@ -533,4 +588,6 @@ def send_batch(
         "skipped_bounce": skipped_bounce,
         "skipped_timezone": skipped_timezone,
         "skipped_throttle": skipped_throttle,
+        "skipped_validation": skipped_validation,
+        "validation_summary": vresult.get("summary"),
     }
