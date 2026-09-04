@@ -241,6 +241,12 @@ def check_warmup_stale(hours: int = WARMUP_STALE_HOURS) -> bool:
 
     schedule = load_schedule(create_if_missing=False)
     last_send = schedule.get("last_send")
+    total_sent = int(schedule.get("total_sent") or 0)
+    day = int(schedule.get("day") or 1)
+    # Fresh reset / never started — don't alarm until warmup has actually begun
+    if not last_send and total_sent == 0 and day <= 2:
+        return False
+
     if not last_send:
         stale = True
     else:
