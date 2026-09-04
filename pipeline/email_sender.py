@@ -62,6 +62,33 @@ def load_smtp_accounts(*, cold_only: bool = True) -> list[tuple[str, str]]:
     return _load(cold_only=cold_only)
 
 
+def allowed_sender_emails() -> set[str]:
+    """Only addresses present in data/accounts.json may send."""
+    from .smtp_accounts import load_account_records
+
+    return {
+        a["email"].lower()
+        for a in load_account_records(
+            enabled_only=False, cold_only=False, with_password=False
+        )
+    }
+
+
+def assert_allowed_sender(email: str) -> None:
+    """Hard guard: refuse send FROM any address not in accounts.json."""
+    key = (email or "").strip().lower()
+    # Explicit ban for known passive warmup receivers
+    try:
+        from .warmup import is_passive_external
+
+        if is_passive_external(key):
+            raise RuntimeError(f"Address not allowed as sender: {email}")
+    except ImportError:
+        pass
+    if key not in allowed_sender_emails():
+        raise RuntimeError(f"Address not allowed as sender: {email}")
+
+
 def _load_rotation_index(n: int) -> int:
     if n <= 0:
         return 0
@@ -238,6 +265,13 @@ def send_email(
     body_text = body_text or ""
     from_email = (from_email or "").strip().lower() or None
 
+    if from_email:
+        try:
+            assert_allowed_sender(from_email)
+        except RuntimeError as e:
+            print(f"send_email error: {e}")
+            return False
+
     if not to:
         print("send_email error: empty recipient")
         return False
@@ -317,6 +351,7 @@ def send_email(
             print(f"send_email error: from_email {from_email} not in SMTP accounts")
             return False
         idx, email, password = match
+        assert_allowed_sender(email)
         if not skip_throttle and not is_account_available(email):
             print(f"send_email: fixed account {email} unavailable (limit/cooldown)")
             return False
@@ -366,6 +401,11 @@ def send_email(
         n = len(accounts)
         start = _load_rotation_index(n)
         email, password = accounts[start]
+        try:
+            assert_allowed_sender(email)
+        except RuntimeError as e:
+            print(f"send_email error: {e}")
+            return False
         idx = start
         if _dry_run():
             print(f"(DRY_RUN) skip_throttle from {email}")
@@ -425,6 +465,11 @@ def send_email(
         if not picked:
             return False
         email, password, idx = picked
+        try:
+            assert_allowed_sender(email)
+        except RuntimeError as e:
+            print(f"send_email error: {e}")
+            return False
         if email.lower() in tried:
             # Avoid infinite same-pick loops; try sequential unused available
             from .send_throttle import is_account_available as _avail

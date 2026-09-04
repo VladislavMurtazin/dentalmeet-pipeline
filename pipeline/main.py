@@ -11,6 +11,10 @@
   python -m pipeline.main reply-inboxes
   python -m pipeline.main test-classify --text "yes, interested!"
   python -m pipeline.main reply-stats
+  python -m pipeline.main show-templates
+  python -m pipeline.main warmup-matrix
+  python -m pipeline.main warmup-health
+  python -m pipeline.main test-smtp --email vladislav@meet-agency.com
   python -m pipeline.main account-health
   python -m pipeline.main throttle-status
   python -m pipeline.main check_forms
@@ -189,6 +193,12 @@ def run_reply_stats(_args: argparse.Namespace) -> None:
     from .reply_classifier import print_reply_stats
 
     print_reply_stats()
+
+
+def run_show_templates(_args: argparse.Namespace) -> None:
+    from .replies import print_response_templates
+
+    print_response_templates()
 
 
 def run_account_health(_args: argparse.Namespace) -> None:
@@ -580,6 +590,28 @@ def main() -> None:
         "reply-stats",
         help="Show reply classification breakdown by category/language",
     )
+    sub.add_parser(
+        "show-templates",
+        help="Preview auto-reply templates (interested/question/etc.)",
+    )
+    sub.add_parser(
+        "warmup-matrix",
+        help="Print from→to warmup matrix for last 24h (all Zoho+Google)",
+    )
+    sub.add_parser(
+        "warmup-health",
+        help="Warmup health: active accounts, cross-provider, external",
+    )
+    p_tsmtp = sub.add_parser(
+        "test-smtp",
+        help="Test SMTP connection/auth/send for one sending account",
+    )
+    p_tsmtp.add_argument("--email", required=True, help="Account email to test")
+    p_tsmtp.add_argument(
+        "--no-send",
+        action="store_true",
+        help="Skip self-send probe (login only)",
+    )
 
     sub.add_parser(
         "account-health",
@@ -754,6 +786,28 @@ def main() -> None:
 
     if args.command == "reply-stats":
         run_reply_stats(args)
+        return
+
+    if args.command == "show-templates":
+        run_show_templates(args)
+        return
+
+    if args.command == "warmup-matrix":
+        from .warmup import print_warmup_matrix
+
+        print_warmup_matrix()
+        return
+
+    if args.command == "warmup-health":
+        from .warmup import print_warmup_health
+
+        print_warmup_health()
+        return
+
+    if args.command == "test-smtp":
+        from .warmup import test_smtp_account
+
+        test_smtp_account(args.email, send_probe=not args.no_send)
         return
 
     if args.command == "account-health":

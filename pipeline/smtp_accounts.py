@@ -82,15 +82,36 @@ def _password_map_from_env() -> dict[str, str]:
     return out
 
 
+# Named Google env aliases ↔ numbered secrets used in CI (GOOGLE_SMTP_1/2/3).
+_GOOGLE_PASSWORD_ALIASES: dict[str, tuple[str, ...]] = {
+    "GOOGLE_SMTP_1": ("GOOGLE_SMTP_VLADISLAV_PASSWORD",),
+    "GOOGLE_SMTP_VLADISLAV_PASSWORD": ("GOOGLE_SMTP_1",),
+    "GOOGLE_SMTP_2": ("GOOGLE_SMTP_FOUNDER_PASSWORD",),
+    "GOOGLE_SMTP_FOUNDER_PASSWORD": ("GOOGLE_SMTP_2",),
+    "GOOGLE_SMTP_3": ("GOOGLE_SMTP_OUTREACH_PASSWORD",),
+    "GOOGLE_SMTP_OUTREACH_PASSWORD": ("GOOGLE_SMTP_3",),
+}
+
+
 def resolve_account_password(acc: dict[str, Any], pwmap: dict[str, str] | None = None) -> str:
     """Resolve app password for an account (password_env first, then CSV map)."""
     env_key = (acc.get("password_env") or "").strip()
+    candidates: list[str] = []
     if env_key:
-        pwd = os.environ.get(env_key, "").replace(" ", "").strip()
+        candidates.append(env_key)
+        candidates.extend(_GOOGLE_PASSWORD_ALIASES.get(env_key, ()))
+    email = (acc.get("email") or "").strip().lower()
+    local = email.split("@", 1)[0].upper().replace(".", "_") if "@" in email else ""
+    if local and (acc.get("provider") or "").lower() == "google":
+        named = f"GOOGLE_SMTP_{local}_PASSWORD"
+        if named not in candidates:
+            candidates.append(named)
+    for key in candidates:
+        pwd = os.environ.get(key, "").replace(" ", "").strip()
         if pwd:
             return pwd
     pwmap = pwmap if pwmap is not None else _password_map_from_env()
-    return pwmap.get((acc.get("email") or "").strip().lower(), "")
+    return pwmap.get(email, "")
 
 
 def default_accounts_catalog() -> dict[str, Any]:
@@ -283,10 +304,7 @@ def load_reply_imap_accounts(*, with_password: bool = True) -> list[dict[str, An
 
 def get_account(email: str) -> dict[str, Any] | None:
     key = (email or "").strip().lower()
-    for acc in load_account_records(enabled_only=False, cold_only=False, with_password=True):
-        if acc["email"].lower() == key:
-            return acc
-    # Metadata without requiring password
+    # Metadata first (no password required — avoids WARN spam on diagnostics)
     for acc in load_account_records(enabled_only=False, cold_only=False, with_password=False):
         if acc["email"].lower() == key:
             return acc

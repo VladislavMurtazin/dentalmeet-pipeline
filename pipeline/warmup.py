@@ -32,8 +32,12 @@ from .email_sender import load_smtp_accounts, send_email
 ROOT = Path(__file__).resolve().parent.parent
 SCHEDULE_PATH = ROOT / "data" / "warmup_schedule.json"
 EXTERNAL_PATH = ROOT / "data" / "external_recipients.json"
-# 0 = internal-only (our accounts). Raise only for owned seed inboxes, never clients.
+# 0 = internal-only unless passive externals exist (see effective_external_ratio).
 EXTERNAL_RATIO = float(os.environ.get("WARMUP_EXTERNAL_RATIO", "0") or "0")
+# Receiver-only Gmail seeds — NEVER send FROM these; never IMAP/SMTP; not in accounts.json.
+WARMUP_EXTERNAL_PASSIVE = [
+    "trestovtrest8@gmail.com",
+]
 
 IMAP_SERVER = os.environ.get("IMAP_SERVER", "imap.zoho.com").strip() or "imap.zoho.com"
 IMAP_PORT = int(os.environ.get("IMAP_PORT", "993") or "993")
@@ -173,6 +177,10 @@ DEFAULT_SCHEDULE = {
     "external_sent": 0,
     "last_send": None,
     "last_process": None,
+    "matrix_events": [],
+    "account_stats": {},
+    "last_pairs": {},
+    "processed_threads": [],
 }
 
 
@@ -357,6 +365,99 @@ def build_run_pairs(
     return pairs
 
 
+def provider_of(email_addr: str) -> str:
+    """zoho | google | external — for cross-provider preference."""
+    key = (email_addr or "").strip().lower()
+    if is_passive_external(key):
+        return "external"
+    try:
+        from .smtp_accounts import get_account
+
+        acc = get_account(key)
+        if acc and acc.get("provider"):
+            return str(acc["provider"]).lower()
+    except Exception:
+        pass
+    domain = key.split("@")[-1] if "@" in key else ""
+    if "meet-agency" in domain or domain == "gmail.com":
+        return "google"
+    if "dentalmeet" in domain:
+        return "zoho"
+    return "external"
+
+
+def pick_recipient(
+    sender: str,
+    all_recipients: list[str],
+    *,
+    last_pair: tuple[str, str] | None = None,
+    cross_prob: float = 0.70,
+) -> str | None:
+    """Pick recipient ≠ sender; ~70% prefer cross-provider; avoid last pair."""
+    sender_l = (sender or "").strip().lower()
+    candidates = [
+        r for r in all_recipients if (r or "").strip().lower() != sender_l
+    ]
+    if not candidates:
+        return None
+
+    if last_pair:
+        last_s, last_r = last_pair[0].lower(), last_pair[1].lower()
+        if last_s == sender_l:
+            filtered = [r for r in candidates if r.lower() != last_r]
+            if filtered:
+                candidates = filtered
+
+    sender_provider = provider_of(sender)
+    cross = [r for r in candidates if provider_of(r) != sender_provider]
+    if cross and random.random() < float(cross_prob):
+        return random.choice(cross)
+    return random.choice(candidates)
+
+
+def build_cross_warmup_pairs(
+    senders: list[str],
+    *,
+    last_pairs: dict[str, str] | None = None,
+    include_external: bool = True,
+) -> list[tuple[str, str, str, str]]:
+    """
+    One send FROM each sender; recipient from other senders + passive/file externals.
+    Returns (sender, recipient, kind, recip_name) with kind internal|external.
+    """
+    last_pairs = last_pairs or {}
+    recipient_pool = list(senders)
+    external_recs = load_external_recipients() if include_external else []
+    ext_by_email = {r["email"].lower(): r for r in external_recs}
+    for rec in external_recs:
+        e = rec["email"]
+        if e.lower() not in {x.lower() for x in recipient_pool}:
+            recipient_pool.append(e)
+
+    mixed: list[tuple[str, str, str, str]] = []
+    used_recipients: set[str] = set()
+    for sender in senders:
+        # Soft balance: prefer recipients not already targeted this run
+        prefer = [
+            r
+            for r in recipient_pool
+            if r.lower() != sender.lower() and r.lower() not in used_recipients
+        ]
+        pool = prefer if prefer else recipient_pool
+        last = last_pairs.get(sender.lower())
+        last_pair = (sender, last) if last else None
+        recip = pick_recipient(sender, pool, last_pair=last_pair)
+        if not recip:
+            continue
+        used_recipients.add(recip.lower())
+        if recip.lower() in ext_by_email or is_passive_external(recip):
+            name = (ext_by_email.get(recip.lower()) or {}).get("name") or ""
+            mixed.append((sender, recip, "external", name))
+        else:
+            mixed.append((sender, recip, "internal", ""))
+    return mixed
+
+
 def pair_offset_for_total_sent(total_sent: int, n_accounts: int | None = None) -> int:
     """Shift recipient index: run 1→+1, run 2→+2, … cycles every (n-1) runs."""
     n = int(n_accounts or REQUIRED_ACCOUNTS)
@@ -487,20 +588,66 @@ def generate_external_warmup_content(
     return subject, body
 
 
+def _week_start_utc(d: date | None = None) -> str:
+    d = d or datetime.now(timezone.utc).date()
+    monday = d - timedelta(days=d.weekday())
+    return monday.isoformat()
+
+
+def effective_external_ratio() -> float:
+    """Env ratio; if 0 but passive externals exist, use a small default so they get mail."""
+    ratio = float(EXTERNAL_RATIO)
+    if ratio > 0:
+        return ratio
+    if WARMUP_EXTERNAL_PASSIVE:
+        return 0.20
+    return 0.0
+
+
+def passive_external_emails() -> list[str]:
+    """Normalized passive receiver-only addresses (hardcoded + never senders)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in WARMUP_EXTERNAL_PASSIVE:
+        email_addr = (raw or "").strip().lower()
+        if not email_addr or "@" not in email_addr or email_addr in seen:
+            continue
+        seen.add(email_addr)
+        out.append(email_addr)
+    return out
+
+
+def is_passive_external(email_addr: str) -> bool:
+    return (email_addr or "").strip().lower() in set(passive_external_emails())
+
+
+def load_passive_external_recipients() -> list[dict]:
+    return [
+        {
+            "email": e,
+            "name": _display_name(e),
+            "role": "passive",
+        }
+        for e in passive_external_emails()
+    ]
+
+
 def load_external_recipients() -> list[dict]:
-    """Load [{email, name}, ...] from data/external_recipients.json."""
+    """Load file externals + merge hardcoded passive receivers."""
     if not EXTERNAL_PATH.exists():
-        return []
-    try:
-        raw = json.loads(EXTERNAL_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    items = raw.get("external") if isinstance(raw, dict) else None
-    if not isinstance(items, list):
-        return []
+        file_items: list[dict] = []
+    else:
+        try:
+            raw = json.loads(EXTERNAL_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            file_items = []
+        else:
+            items = raw.get("external") if isinstance(raw, dict) else None
+            file_items = items if isinstance(items, list) else []
+
     out: list[dict] = []
     seen: set[str] = set()
-    for item in items:
+    for item in file_items:
         if not isinstance(item, dict):
             continue
         email_addr = str(item.get("email") or "").strip()
@@ -509,14 +656,46 @@ def load_external_recipients() -> list[dict]:
         key = email_addr.lower()
         if key in seen:
             continue
+        # Never promote a passive address into an active/file identity conflict
+        role = "passive" if key in set(passive_external_emails()) else "external"
         seen.add(key)
         out.append(
             {
                 "email": email_addr,
                 "name": str(item.get("name") or "").strip() or _display_name(email_addr),
+                "role": role,
             }
         )
+    for rec in load_passive_external_recipients():
+        key = rec["email"].lower()
+        if key in seen:
+            # Ensure role stays passive
+            for existing in out:
+                if existing["email"].lower() == key:
+                    existing["role"] = "passive"
+            continue
+        seen.add(key)
+        out.append(rec)
     return out
+
+
+def list_external_recipients() -> None:
+    """CLI: print passive + file external warmup recipients."""
+    print("=== WARMUP EXTERNAL ===")
+    passive = load_passive_external_recipients()
+    print(f"Passive (receiver-only, hardcoded): {len(passive)}")
+    for rec in passive:
+        print(f"  - {rec['email']}  [passive — never sender / never IMAP]")
+    file_only = [
+        r
+        for r in load_external_recipients()
+        if r.get("role") != "passive"
+    ]
+    print(f"File list (data/external_recipients.json): {len(file_only)}")
+    for rec in file_only:
+        print(f"  - {rec['email']} ({rec.get('name') or ''})")
+    print(f"Effective external ratio: {effective_external_ratio():.0%}")
+    print("=======================")
 
 
 def save_external_recipients(recipients: list[dict]) -> None:
@@ -541,34 +720,123 @@ def add_external_recipient(email_addr: str, name: str = "") -> dict:
     email_addr = (email_addr or "").strip()
     if not email_addr or "@" not in email_addr:
         raise ValueError(f"invalid email: {email_addr!r}")
+    if is_passive_external(email_addr):
+        raise ValueError(
+            f"{email_addr} is a hardcoded PASSIVE external (receiver-only). "
+            "Do not add it to external_recipients.json or accounts.json."
+        )
     name = (name or "").strip() or _display_name(email_addr)
-    recipients = load_external_recipients()
+    # File-only list (exclude passive hardcoded)
+    file_recs = [
+        r for r in load_external_recipients() if r.get("role") != "passive"
+    ]
     key = email_addr.lower()
-    for rec in recipients:
+    for rec in file_recs:
         if rec["email"].lower() == key:
             rec["email"] = email_addr
             rec["name"] = name
-            save_external_recipients(recipients)
+            save_external_recipients(file_recs)
             print(f"Updated external recipient: {email_addr} ({name})")
             return rec
     rec = {"email": email_addr, "name": name}
-    recipients.append(rec)
-    save_external_recipients(recipients)
+    file_recs.append(rec)
+    save_external_recipients(file_recs)
     print(f"Added external recipient: {email_addr} ({name})")
     return rec
+
+
+def _bump_external_week_counter(schedule: dict, email_addr: str) -> None:
+    week = _week_start_utc()
+    raw = schedule.get("external_week")
+    if not isinstance(raw, dict) or raw.get("week_start") != week:
+        raw = {"week_start": week, "counts": {}}
+    counts = raw.get("counts")
+    if not isinstance(counts, dict):
+        counts = {}
+    key = (email_addr or "").strip().lower()
+    counts[key] = int(counts.get(key) or 0) + 1
+    raw["counts"] = counts
+    schedule["external_week"] = raw
+
+
+def _record_matrix_event(
+    schedule: dict,
+    *,
+    sender: str,
+    recipient: str,
+    kind: str,
+) -> None:
+    now = _utc_now()
+    events = schedule.get("matrix_events")
+    if not isinstance(events, list):
+        events = []
+    cross = provider_of(sender) != provider_of(recipient)
+    events.append(
+        {
+            "ts": now.isoformat(),
+            "from": sender.lower(),
+            "to": recipient.lower(),
+            "kind": kind,
+            "cross": cross,
+        }
+    )
+    # Keep ~7 days of events for matrix / health
+    cutoff = now - timedelta(days=7)
+    pruned: list[dict] = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        ts = _parse_iso(ev.get("ts"))
+        if ts and ts >= cutoff:
+            pruned.append(ev)
+    schedule["matrix_events"] = pruned[-2000:]
+
+    stats = schedule.get("account_stats")
+    if not isinstance(stats, dict):
+        stats = {}
+    for key, field in ((sender.lower(), "sent"), (recipient.lower(), "received")):
+        row = stats.get(key) if isinstance(stats.get(key), dict) else {}
+        row[field] = int(row.get(field) or 0) + 1
+        row["last_activity"] = now.isoformat()
+        stats[key] = row
+    schedule["account_stats"] = stats
+
+    last_pairs = schedule.get("last_pairs")
+    if not isinstance(last_pairs, dict):
+        last_pairs = {}
+    last_pairs[sender.lower()] = recipient.lower()
+    schedule["last_pairs"] = last_pairs
+
+    total = int(schedule.get("total_sent") or 0)
+    if total > 0 and total % 100 == 0:
+        print(f"warmup milestone: {total} total warmup emails sent")
+
+
+def _events_since(schedule: dict, hours: float = 24.0) -> list[dict]:
+    cutoff = _utc_now() - timedelta(hours=hours)
+    out: list[dict] = []
+    for ev in schedule.get("matrix_events") or []:
+        if not isinstance(ev, dict):
+            continue
+        ts = _parse_iso(ev.get("ts"))
+        if ts and ts >= cutoff:
+            out.append(ev)
+    return out
 
 
 def mix_internal_external_pairs(
     internal_pairs: list[tuple[str, str]],
     external: list[dict],
     *,
-    ratio: float = EXTERNAL_RATIO,
+    ratio: float | None = None,
 ) -> list[tuple[str, str, str, str]]:
     """Return (sender, recipient, kind, recip_name) with ~ratio external.
 
     kind is ``internal`` or ``external``. Internal rotation pairs are kept
     for non-external slots; external slots pick a random external address.
     """
+    if ratio is None:
+        ratio = effective_external_ratio()
     n = len(internal_pairs)
     if n == 0:
         return []
@@ -635,6 +903,18 @@ def _normalize_schedule(raw: dict | None = None) -> dict:
     data["external_sent"] = max(0, int(data.get("external_sent") or 0))
     data["last_send"] = data.get("last_send") or None
     data["last_process"] = data.get("last_process") or None
+    if not isinstance(data.get("matrix_events"), list):
+        data["matrix_events"] = []
+    if not isinstance(data.get("account_stats"), dict):
+        data["account_stats"] = {}
+    if not isinstance(data.get("last_pairs"), dict):
+        data["last_pairs"] = {}
+    if not isinstance(data.get("processed_threads"), list):
+        data["processed_threads"] = []
+    if data.get("calendar_date") is not None:
+        data["calendar_date"] = str(data.get("calendar_date") or "") or None
+    if not isinstance(data.get("external_week"), dict):
+        data["external_week"] = {"week_start": _week_start_utc(), "counts": {}}
     return data
 
 
@@ -657,17 +937,19 @@ def load_schedule(*, create_if_missing: bool = False) -> dict:
 
 def save_schedule(data: dict) -> None:
     SCHEDULE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "day": max(1, int(data.get("day") or 1)),
-        "runs_today": max(0, int(data.get("runs_today") or 0)),
-        "emails_sent_today": max(0, int(data.get("emails_sent_today") or 0)),
-        "total_sent": max(0, int(data.get("total_sent") or 0)),
-        "total_replies": max(0, int(data.get("total_replies") or 0)),
-        "internal_sent": max(0, int(data.get("internal_sent") or 0)),
-        "external_sent": max(0, int(data.get("external_sent") or 0)),
-        "last_send": data.get("last_send"),
-        "last_process": data.get("last_process"),
-    }
+    payload = _normalize_schedule(data)
+    # Persist extended diagnostics (do not drop unknown keys we care about)
+    for key in (
+        "external_week",
+        "matrix_events",
+        "account_stats",
+        "last_pairs",
+        "processed_threads",
+        "calendar_date",
+        "warmup_milestones",
+    ):
+        if key in data:
+            payload[key] = data[key]
     SCHEDULE_PATH.write_text(
         json.dumps(payload, indent=2) + "\n", encoding="utf-8"
     )
@@ -682,14 +964,25 @@ def _last_activity(schedule: dict) -> datetime | None:
 
 
 def _roll_calendar_day(schedule: dict) -> dict:
-    """Advance day / reset daily counters when the UTC date changes."""
+    """Advance day / reset daily counters once per UTC calendar date."""
     now = _utc_now()
-    last = _last_activity(schedule)
-    if last is None:
+    today = now.date().isoformat()
+    if schedule.get("calendar_date") == today:
         return schedule
 
-    if last.date() < now.date():
-        days_elapsed = (now.date() - last.date()).days
+    prev = schedule.get("calendar_date")
+    days_elapsed = 0
+    if prev:
+        try:
+            days_elapsed = (now.date() - date.fromisoformat(str(prev))).days
+        except ValueError:
+            days_elapsed = 0
+    else:
+        last = _last_activity(schedule)
+        if last is not None:
+            days_elapsed = (now.date() - last.date()).days
+
+    if days_elapsed > 0:
         schedule["day"] = int(schedule["day"]) + days_elapsed
         schedule["runs_today"] = 0
         schedule["emails_sent_today"] = 0
@@ -699,6 +992,12 @@ def _roll_calendar_day(schedule: dict) -> dict:
             f"({warmup_phase_label(d)}, "
             f"base {max_runs_per_day(d)} runs/day)"
         )
+    elif schedule.get("calendar_date") != today:
+        # First stamp today without advancing (or same-day migration)
+        schedule["runs_today"] = int(schedule.get("runs_today") or 0)
+        schedule["emails_sent_today"] = int(schedule.get("emails_sent_today") or 0)
+
+    schedule["calendar_date"] = today
     return schedule
 
 
@@ -768,13 +1067,26 @@ def send_warmup_emails() -> dict:
             "external_sent": 0,
         }
 
-    offset = pair_offset_for_total_sent(int(schedule["total_sent"]), n_acc)
-    internal_pairs = build_run_pairs(emails, offset=offset)
-    if len(internal_pairs) != n_acc:
-        print(
-            f"warmup send error: expected {n_acc} pairs, "
-            f"got {len(internal_pairs)}"
-        )
+    # Warn if any account silent >6h
+    stats = schedule.get("account_stats") if isinstance(schedule.get("account_stats"), dict) else {}
+    now = _utc_now()
+    for email in emails:
+        row = stats.get(email.lower()) if isinstance(stats.get(email.lower()), dict) else {}
+        last = _parse_iso(row.get("last_activity"))
+        if last and (now - last) > timedelta(hours=6):
+            hours = (now - last).total_seconds() / 3600.0
+            print(f"WARN: {email} inactive in warmup for {hours:.1f}h")
+        elif not last and int(schedule.get("total_sent") or 0) > 0:
+            print(f"WARN: {email} has no warmup activity recorded yet")
+
+    last_pairs = schedule.get("last_pairs") if isinstance(schedule.get("last_pairs"), dict) else {}
+    mixed = build_cross_warmup_pairs(
+        emails,
+        last_pairs=last_pairs,
+        include_external=True,
+    )
+    if len(mixed) < 2:
+        print("warmup send error: could not build cross-provider pairs")
         return {
             "sent": 0,
             "failed": 0,
@@ -783,18 +1095,23 @@ def send_warmup_emails() -> dict:
             "external_sent": 0,
         }
 
-    mixed = mix_internal_external_pairs(
-        internal_pairs, external, ratio=EXTERNAL_RATIO
-    )
     n_ext_planned = sum(1 for _s, _r, kind, _n in mixed if kind == "external")
-    n_int_planned = len(mixed) - n_ext_planned
-
-    print(
-        f"warmup send: pair offset +{offset} "
-        f"(planned internal={n_int_planned} external={n_ext_planned})"
+    n_cross = sum(
+        1
+        for s, r, _k, _n in mixed
+        if provider_of(s) != provider_of(r)
     )
-    for sender, recipient, kind, _name in mixed:
-        tag = "EXTERNAL" if kind == "external" else "internal"
+    n_int_planned = len(mixed) - n_ext_planned
+    print(
+        f"warmup send: cross-provider pairs "
+        f"(internal={n_int_planned} external={n_ext_planned} "
+        f"cross={n_cross}/{len(mixed)})"
+    )
+    for sender, recipient, kind, recip_name in mixed:
+        cross = provider_of(sender) != provider_of(recipient)
+        tag = "passive external" if is_passive_external(recipient) else (
+            "cross-provider" if cross else kind
+        )
         print(f"  planned [{tag}]: {sender} -> {recipient}")
 
     sent = 0
@@ -803,6 +1120,10 @@ def send_warmup_emails() -> dict:
     external_sent = 0
 
     for i, (sender, recipient, kind, recip_name) in enumerate(mixed):
+        if is_passive_external(sender) or sender.lower() in set(passive_external_emails()):
+            print(f"warmup SAFETY skip: refusing passive as sender {sender}")
+            failed += 1
+            continue
         if sender.lower() not in allowed_senders:
             print(f"warmup SAFETY skip: unknown sender {sender}")
             failed += 1
@@ -841,17 +1162,24 @@ def send_warmup_emails() -> dict:
             sent += 1
             schedule["emails_sent_today"] = int(schedule["emails_sent_today"]) + 1
             schedule["total_sent"] = int(schedule["total_sent"]) + 1
+            cross = provider_of(sender) != provider_of(recipient)
+            _record_matrix_event(
+                schedule, sender=sender, recipient=recipient, kind=kind
+            )
             if kind == "external":
                 external_sent += 1
                 schedule["external_sent"] = int(schedule.get("external_sent") or 0) + 1
+                _bump_external_week_counter(schedule, recipient)
+                if is_passive_external(recipient):
+                    print(f"Warmup → {recipient} (passive external)")
             else:
                 internal_sent += 1
                 schedule["internal_sent"] = int(schedule.get("internal_sent") or 0) + 1
             schedule["last_send"] = _iso_now()
-            tag = "EXTERNAL" if kind == "external" else "internal"
+            label = "cross-provider" if cross else kind
             print(
-                f"warmup sent [{sent}/{n_acc}] [{tag}]: {sender} -> {recipient} "
-                f"| subject={subject!r}"
+                f"Warmup: {sender} → {recipient} ({label}) "
+                f"[{sent}/{n_acc}] subject={subject!r}"
             )
         else:
             failed += 1
@@ -958,22 +1286,33 @@ def _collect_unread_peer_ids(
     return unique
 
 
+def _thread_keys_for_message(msg: email.message.Message) -> list[str]:
+    keys: list[str] = []
+    for header in ("Message-ID", "In-Reply-To"):
+        raw = (msg.get(header) or "").strip()
+        if raw:
+            keys.append(raw)
+    return keys
+
+
 def _process_account_inbox(
     account_email: str,
     password: str,
     peer_emails: set[str],
     *,
+    processed_threads: set[str],
     delay_between: bool = True,
-) -> int:
-    """Mark/read/star/reply/move unread peer mail. Returns replies sent."""
+) -> tuple[int, set[str]]:
+    """Mark/read/star/reply/file unread peer mail. Returns (replies, new thread ids)."""
     processed = 0
+    newly_seen: set[str] = set()
     mail = None
     try:
         mail = _imap_connect(account_email, password)
         typ, _ = mail.select("INBOX")
         if typ != "OK":
             print(f"warmup IMAP: cannot select INBOX for {account_email}")
-            return 0
+            return 0, newly_seen
 
         folder = _ensure_folder(mail, WARMUP_FOLDER)
         mail.select("INBOX")
@@ -981,7 +1320,7 @@ def _process_account_inbox(
 
         if not unique_ids:
             print(f"warmup IMAP: no unread peer mail in {account_email}")
-            return 0
+            return 0, newly_seen
 
         print(
             f"warmup IMAP: {len(unique_ids)} unread peer message(s) "
@@ -999,6 +1338,31 @@ def _process_account_inbox(
                 msg = email.message_from_bytes(raw)
                 from_addr = parseaddr(_decode_header(msg.get("From")))[1].lower()
                 if from_addr not in peer_emails or from_addr == account_email.lower():
+                    continue
+                if is_passive_external(from_addr):
+                    mail.store(num, "+FLAGS", "(\\Seen)")
+                    continue
+
+                warmup_flag = (msg.get(WARMUP_HEADER) or "").strip().lower()
+                thread_keys = _thread_keys_for_message(msg)
+                already = any(
+                    k in processed_threads or k in newly_seen for k in thread_keys
+                )
+
+                # Skip our own warmup replies — prevents A↔B reply loops
+                if warmup_flag == "reply" or already:
+                    mail.store(num, "+FLAGS", "(\\Seen \\Flagged)")
+                    try:
+                        mail.copy(num, folder)
+                        mail.store(num, "+FLAGS", "(\\Deleted)")
+                    except Exception:
+                        pass
+                    for k in thread_keys:
+                        newly_seen.add(k)
+                    print(
+                        f"warmup skip loop-guard: {from_addr} -> {account_email} "
+                        f"(header={warmup_flag or 'none'}, seen={already})"
+                    )
                     continue
 
                 mail.store(num, "+FLAGS", "(\\Seen \\Flagged)")
@@ -1036,6 +1400,8 @@ def _process_account_inbox(
 
                 if ok:
                     processed += 1
+                    for k in thread_keys:
+                        newly_seen.add(k)
                     print(
                         f"warmup replied [{processed}]: "
                         f"{account_email} -> {from_addr}"
@@ -1073,7 +1439,7 @@ def _process_account_inbox(
                 pass
 
     print(f"Processed {processed} warmup replies from {account_email}")
-    return processed
+    return processed, newly_seen
 
 
 def process_warmup_inbox() -> dict:
@@ -1087,11 +1453,21 @@ def process_warmup_inbox() -> dict:
         return {"replies": 0, "skipped": True}
 
     peers = _account_set(accounts)
+    schedule = _roll_calendar_day(load_schedule(create_if_missing=True))
+    seen = {
+        str(x).strip()
+        for x in (schedule.get("processed_threads") or [])
+        if str(x).strip()
+    }
     total = 0
     for email_addr, password in accounts:
-        total += _process_account_inbox(email_addr, password, peers)
+        n, new_ids = _process_account_inbox(
+            email_addr, password, peers, processed_threads=seen
+        )
+        total += n
+        seen.update(new_ids)
 
-    schedule = _roll_calendar_day(load_schedule(create_if_missing=True))
+    schedule["processed_threads"] = list(seen)[-500:]
     schedule["total_replies"] = int(schedule.get("total_replies") or 0) + total
     schedule["last_process"] = _iso_now()
     save_schedule(schedule)
@@ -1133,11 +1509,226 @@ def _status_label(day: int) -> str:
     return f"{phase.upper()} ({base} run(s)/day base)"
 
 
+def _short_label(email_addr: str) -> str:
+    key = (email_addr or "").strip().lower()
+    if is_passive_external(key) or key.endswith("@gmail.com"):
+        if "trestov" in key:
+            return "ext"
+        local = _local_part(key)[:6] or "ext"
+        return local[:7]
+    local = _local_part(key)
+    domain = key.split("@")[-1] if "@" in key else ""
+    if "meet-agency" in domain:
+        mapping = {
+            "vladislav": "gv",
+            "founder": "gf",
+            "outreach": "go",
+        }
+        return mapping.get(local, f"g-{local[:4]}")[:7]
+    zoho_map = {
+        "vladislav": "vladis",
+        "outreach": "outrea",
+        "founder": "foundr",
+        "hello": "hello",
+        "vlad": "vlad",
+    }
+    if local in zoho_map:
+        return zoho_map[local]
+    return (local or key[:7])[:7]
+
+
+def list_warmup_account_emails() -> list[str]:
+    """All enabled warmup accounts from accounts.json (no password required)."""
+    from .smtp_accounts import load_account_records
+
+    records = load_account_records(
+        enabled_only=True, cold_only=False, with_password=False, warmup_only=True
+    )
+    emails = [a["email"] for a in records]
+    zoho: list[str] = []
+    google: list[str] = []
+    other: list[str] = []
+    by_local_zoho = {
+        _local_part(e): e
+        for e in emails
+        if "dentalmeet" in e.lower()
+    }
+    for alias in ACCOUNT_ORDER:
+        if alias in by_local_zoho:
+            zoho.append(by_local_zoho[alias])
+    seen = {e.lower() for e in zoho}
+    for e in emails:
+        if e.lower() in seen:
+            continue
+        if "meet-agency" in e.lower() or provider_of(e) == "google":
+            google.append(e)
+        else:
+            other.append(e)
+        seen.add(e.lower())
+    return zoho + google + other
+
+
+def print_warmup_matrix(*, hours: float = 24.0) -> None:
+    schedule = load_schedule(create_if_missing=True)
+    events = _events_since(schedule, hours=hours)
+    ordered = list_warmup_account_emails()
+    cols = list(ordered) + [
+        r["email"]
+        for r in load_external_recipients()
+        if r["email"].lower() not in {x.lower() for x in ordered}
+    ]
+    labels = [_short_label(e) for e in cols]
+    idx = {e.lower(): i for i, e in enumerate(cols)}
+
+    n = len(cols)
+    grid = [[0 for _ in range(n)] for _ in range(n)]
+    cross = 0
+    for ev in events:
+        fi = idx.get((ev.get("from") or "").lower())
+        ti = idx.get((ev.get("to") or "").lower())
+        if fi is None or ti is None:
+            continue
+        grid[fi][ti] += 1
+        if ev.get("cross"):
+            cross += 1
+
+    print(f"=== WARMUP MATRIX (last {int(hours)}h) ===")
+    header = f"{'':12}" + "".join(f"{lab:>8}" for lab in labels)
+    print(header)
+    for i, _email in enumerate(cols):
+        row = f"{labels[i]:12}"
+        for j in range(n):
+            row += f"{'-':>8}" if i == j else f"{grid[i][j]:>8}"
+        print(row)
+    total = len(events)
+    ratio = (100.0 * cross / total) if total else 0.0
+    print(f"\nTotal: {total} warmup emails in {int(hours)}h")
+    print(f"Cross-provider: {ratio:.0f}%")
+    print("==============================")
+
+
+def print_warmup_health() -> None:
+    schedule = load_schedule(create_if_missing=True)
+    emails = list_warmup_account_emails()
+    events = _events_since(schedule, hours=24.0)
+    now = _utc_now()
+    stats = schedule.get("account_stats") if isinstance(schedule.get("account_stats"), dict) else {}
+
+    active = 0
+    inactive: list[str] = []
+    for email in emails:
+        row = stats.get(email.lower()) if isinstance(stats.get(email.lower()), dict) else {}
+        last = _parse_iso(row.get("last_activity"))
+        if not last:
+            for ev in reversed(events):
+                if ev.get("from") == email.lower() or ev.get("to") == email.lower():
+                    last = _parse_iso(ev.get("ts"))
+                    break
+        if last and (now - last) <= timedelta(hours=6):
+            active += 1
+        else:
+            inactive.append(email)
+            if last:
+                hours = (now - last).total_seconds() / 3600.0
+                print(f"WARN: {email} inactive {hours:.1f}h")
+            else:
+                print(f"WARN: {email} no warmup activity recorded yet")
+
+    cross = sum(1 for ev in events if ev.get("cross"))
+    ratio = (100.0 * cross / len(events)) if events else 0.0
+    passive_ok = bool(passive_external_emails())
+    ext_recent = any(is_passive_external(ev.get("to") or "") for ev in events)
+
+    last_send = _parse_iso(schedule.get("last_send"))
+    if last_send:
+        ago_m = int((now - last_send).total_seconds() // 60)
+        last_label = f"{ago_m} min ago" if ago_m < 120 else f"{ago_m / 60:.1f}h ago"
+        last_ok = (now - last_send) <= timedelta(hours=6)
+    else:
+        last_label = "never"
+        last_ok = False
+
+    print("=== WARMUP HEALTH ===")
+    print(f"Total accounts: {len(emails)}")
+    mark = "OK" if active == len(emails) and emails else "WARN"
+    print(f"Active in warmup: {active}/{len(emails)} {mark}")
+    cross_mark = "OK" if (ratio >= 50 or not events) else "WARN"
+    print(f"Cross-provider ratio: {ratio:.0f}% {cross_mark}")
+    ext_mark = "OK" if passive_ok else "WARN"
+    ext_state = "active" if ext_recent else ("configured" if passive_ok else "missing")
+    print(
+        f"External warmup: {ext_state} {ext_mark} "
+        f"({', '.join(passive_external_emails()) or 'none'})"
+    )
+    print(f"Last activity: {last_label} {'OK' if last_ok else 'WARN'}")
+    if inactive:
+        print(f"Inactive: {', '.join(inactive)}")
+    print("=====================")
+
+
+def test_smtp_account(email_addr: str, *, send_probe: bool = True) -> dict:
+    """Test SMTP login for one accounts.json mailbox."""
+    from .smtp_accounts import get_account, resolve_account_password, smtp_endpoint
+
+    email_addr = (email_addr or "").strip()
+    print(f"=== SMTP TEST: {email_addr} ===")
+    acc = get_account(email_addr)
+    if not acc or is_passive_external(email_addr):
+        print("FAIL: address not in accounts.json (or is passive external)")
+        print("Fix: add enabled account to data/accounts.json with password_env")
+        print("===========================")
+        return {"ok": False, "error": "not_in_accounts"}
+
+    env_key = (acc.get("password_env") or "").strip()
+    pwd = resolve_account_password(acc)
+    print(f"provider: {acc.get('provider')}")
+    print(f"password_env: {env_key or '(none)'}")
+    if env_key == "GOOGLE_SMTP_VLADISLAV_PASSWORD":
+        print("alias: also accepts GOOGLE_SMTP_1")
+    if not pwd:
+        print(f"FAIL: Authentication — no password in env ({env_key})")
+        print(
+            f"Fix: set GitHub secret / .env {env_key} "
+            "(or GOOGLE_SMTP_1 / SMTP_* CSV lists)"
+        )
+        print("===========================")
+        return {"ok": False, "error": "no_password"}
+
+    host, port, provider = smtp_endpoint(email_addr)
+    print(f"SMTP endpoint: {host}:{port} ({provider})")
+    try:
+        import smtplib
+
+        with smtplib.SMTP_SSL(host, port, timeout=30) as smtp:
+            print("SMTP connection: OK")
+            smtp.login(email_addr, pwd)
+            print("Authentication: OK")
+            if send_probe:
+                from email.mime.text import MIMEText
+
+                msg = MIMEText("DentalMeet SMTP probe — ignore.")
+                msg["Subject"] = "[DentalMeet] SMTP probe"
+                msg["From"] = email_addr
+                msg["To"] = email_addr
+                smtp.sendmail(email_addr, [email_addr], msg.as_string())
+                print("Test send: OK")
+            else:
+                print("Test send: skipped (pass send_probe=True)")
+        print("===========================")
+        return {"ok": True}
+    except Exception as e:
+        print(f"FAIL: {e}")
+        print("Fix: check app password, IMAP/SMTP enabled, and firewall/DNS")
+        print("===========================")
+        return {"ok": False, "error": str(e)}
+
+
 def show_stats() -> None:
     """Print human-readable warmup stats; create schedule file if missing."""
     schedule = _roll_calendar_day(load_schedule(create_if_missing=True))
     save_schedule(schedule)
     external = load_external_recipients()
+    passive = load_passive_external_recipients()
 
     day = int(schedule["day"])
     real_sends = count_real_sends_today()
@@ -1161,10 +1752,58 @@ def show_stats() -> None:
         f"External sent: {schedule.get('external_sent', 0)}"
     )
     print(f"Total replies processed: {schedule['total_replies']}")
-    print(f"External recipients configured: {len(external)}")
+    print(
+        f"External pool: {len(external)} "
+        f"(passive={len(passive)}, file={len(external) - len(passive)}, "
+        f"ratio={effective_external_ratio():.0%})"
+    )
+    week = schedule.get("external_week") if isinstance(schedule.get("external_week"), dict) else {}
+    week_start = week.get("week_start") or _week_start_utc()
+    counts = week.get("counts") if isinstance(week.get("counts"), dict) else {}
+    if week.get("week_start") != _week_start_utc():
+        counts = {}
+        week_start = _week_start_utc()
+    print(f"External sent this week (since {week_start}):")
     for rec in external:
-        print(f"  - {rec['email']} ({rec.get('name') or ''})")
-    print(f"Last send: {_format_ts(schedule.get('last_send'))}")
+        key = rec["email"].lower()
+        n = int(counts.get(key) or 0)
+        role = rec.get("role") or "external"
+        print(f"  - {rec['email']} [{role}]: {n}")
+
+    print("\nPer-account warmup:")
+    now = _utc_now()
+    account_stats = (
+        schedule.get("account_stats")
+        if isinstance(schedule.get("account_stats"), dict)
+        else {}
+    )
+    for email in list_warmup_account_emails():
+        row = account_stats.get(email.lower()) if isinstance(
+            account_stats.get(email.lower()), dict
+        ) else {}
+        sent_n = int(row.get("sent") or 0)
+        recv_n = int(row.get("received") or 0)
+        last = _parse_iso(row.get("last_activity"))
+        last_s = _format_ts(row.get("last_activity")) if last else "never"
+        active = bool(last and (now - last) <= timedelta(hours=6))
+        mark = "OK" if active else "inactive"
+        print(
+            f"  {email}\n"
+            f"    sent FROM: {sent_n}  received BY: {recv_n}\n"
+            f"    last activity: {last_s}  ACTIVE in warmup: {mark}"
+        )
+    for rec in passive:
+        email = rec["email"]
+        row = account_stats.get(email.lower()) if isinstance(
+            account_stats.get(email.lower()), dict
+        ) else {}
+        print(
+            f"  {email} [passive recipient-only]\n"
+            f"    sent FROM: 0  received BY: {int(row.get('received') or 0)}\n"
+            f"    last activity: {_format_ts(row.get('last_activity'))}"
+        )
+
+    print(f"\nLast send: {_format_ts(schedule.get('last_send'))}")
     print(f"Last process: {_format_ts(schedule.get('last_process'))}")
     print(f"Next warmup: {_next_warmup_label(schedule.get('last_send'))}")
     print(f"Status: {_status_label(day)}")
@@ -1175,7 +1814,6 @@ def show_stats() -> None:
     except Exception as e:
         print(f"bounce stats unavailable: {e}")
     print("====================")
-
 
 def reset_schedule() -> None:
     data = _normalize_schedule()
@@ -1188,17 +1826,23 @@ def reset_schedule() -> None:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Zoho mailbox warmup (internal + external recipients)"
+        description="Mailbox warmup (Zoho + Google cross-provider + external)"
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser(
         "send",
-        help="Send one warmup run (5 emails; ~70%% internal / ~30%% external)",
+        help="Send one warmup run (1 email FROM each account; ~70%% cross-provider)",
     )
     sub.add_parser("process", help="IMAP: reply/star/file unread peer mail")
-    sub.add_parser("stats", help="Show warmup schedule stats")
+    sub.add_parser("stats", help="Show warmup schedule + per-account stats")
     sub.add_parser("reset", help="Reset schedule to day 1")
+    sub.add_parser("matrix", help="Print from→to warmup matrix (last 24h)")
+    sub.add_parser("health", help="Warmup health check across all accounts")
+    sub.add_parser(
+        "list-external",
+        help="List passive + file external warmup recipients (receiver-only)",
+    )
 
     p_add = sub.add_parser(
         "add-external",
@@ -1206,6 +1850,14 @@ def main(argv: list[str] | None = None) -> None:
     )
     p_add.add_argument("--email", required=True, help="External email address")
     p_add.add_argument("--name", default="", help="Display name")
+
+    p_smtp = sub.add_parser("test-smtp", help="Test SMTP for one account email")
+    p_smtp.add_argument("--email", required=True)
+    p_smtp.add_argument(
+        "--no-send",
+        action="store_true",
+        help="Skip self-send probe (login only)",
+    )
 
     args = parser.parse_args(argv)
     from .alerts import bump_daily_metric, run_monitored
@@ -1221,8 +1873,16 @@ def main(argv: list[str] | None = None) -> None:
         run_monitored("warmup_stats", show_stats)
     elif args.command == "reset":
         reset_schedule()
+    elif args.command == "matrix":
+        print_warmup_matrix()
+    elif args.command == "health":
+        print_warmup_health()
+    elif args.command == "list-external":
+        list_external_recipients()
     elif args.command == "add-external":
         add_external_recipient(args.email, args.name)
+    elif args.command == "test-smtp":
+        test_smtp_account(args.email, send_probe=not args.no_send)
 
 
 if __name__ == "__main__":

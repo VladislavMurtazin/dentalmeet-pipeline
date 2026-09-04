@@ -477,29 +477,144 @@ def load_response_templates() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def send_classified_response(category: str, lead_email: str, first_name: str) -> bool:
-    """Send presentation + form with category-specific messaging."""
-    from .async_onboarding import brief_form_url, presentation_url
-    from .email_sender import send_email
+def _default_subject(original_subject: str) -> str:
+    subj = (original_subject or "").strip()
+    if not subj:
+        return "DentalMeet"
+    if subj.lower().startswith("re:"):
+        return subj
+    return f"Re: {subj}"
 
+
+def render_response_template(
+    category: str,
+    *,
+    name: str = "there",
+    original_subject: str = "",
+    presentation_url: str = "",
+    form_url: str = "",
+) -> dict[str, str] | None:
+    """Return {subject, body} for a category, or None if missing."""
     templates = load_response_templates()
     tpl = templates.get(category)
     if not isinstance(tpl, dict):
-        print(f"send_classified_response: missing template for {category!r}")
-        return False
+        return None
+    name = (name or "").strip() or "there"
+    orig = (original_subject or "").strip() or "your note"
+    preso = presentation_url or ""
+    form = form_url or ""
+    fmt = {
+        "name": name,
+        "original_subject": orig,
+        "presentation_url": preso,
+        "presentation_link": preso,
+        "form_url": form,
+        "form_link": form,
+    }
+    try:
+        subject = str(tpl.get("subject") or "Re: {original_subject}").format(**fmt)
+    except (KeyError, ValueError):
+        subject = _default_subject(orig)
+    # Guard empty / broken subject after format
+    if "{original_subject}" in subject:
+        subject = _default_subject(orig)
+    try:
+        body = str(tpl.get("body") or "").format(**fmt)
+    except (KeyError, ValueError) as e:
+        print(f"template format error ({category}): {e}")
+        return None
+    return {"subject": subject, "body": body}
 
-    name = (first_name or "").strip() or "there"
+
+def print_response_templates() -> None:
+    """CLI preview of all auto-reply templates."""
+    from .async_onboarding import brief_form_url, presentation_url
+
+    templates = load_response_templates()
+    print("=== AUTO-REPLY TEMPLATES ===")
+    if not templates:
+        print("(no templates in data/response_templates.json)")
+        print("===========================")
+        return
+    preso = presentation_url()
+    form = brief_form_url()
+    banned = (
+        "hop on a call",
+        "schedule a time",
+        "book a meeting",
+        "quick call",
+        "15-min",
+        "15 min",
+        "let's talk",
+        "lets talk",
+        "available for a call",
+        "calendly",
+        "zoom",
+        "book a call",
+        "on a call",
+    )
+    for category in (
+        "interested",
+        "question",
+        "not_interested",
+        "out_of_office",
+        "other",
+    ):
+        rendered = render_response_template(
+            category,
+            name="Alex",
+            original_subject="meetings with dental practices",
+            presentation_url=preso,
+            form_url=form,
+        )
+        print(f"\n--- {category} ---")
+        if not rendered:
+            print("(missing)")
+            continue
+        subject = rendered["subject"]
+        body = rendered["body"]
+        try:
+            print(f"SUBJECT: {subject}")
+            print(body)
+        except UnicodeEncodeError:
+            print(f"SUBJECT: {subject}".encode("ascii", "replace").decode("ascii"))
+            print(body.encode("ascii", "replace").decode("ascii"))
+        low = rendered["body"].lower()
+        hits = [b for b in banned if b in low]
+        if hits:
+            print(f"WARN CALL/MEETING PHRASES FOUND: {hits}")
+        else:
+            print("OK no call/scheduling phrases")
+    print("\n===========================")
+
+
+def send_classified_response(
+    category: str,
+    lead_email: str,
+    first_name: str,
+    *,
+    original_subject: str = "",
+) -> bool:
+    """Send presentation + form with category-specific messaging (email-only)."""
+    from .async_onboarding import brief_form_url, presentation_url
+    from .email_sender import send_email
+
     email_addr = (lead_email or "").strip().lower()
     if not is_email(email_addr):
         return False
 
-    subject = str(tpl.get("subject") or "DentalMeet")
-    body = str(tpl.get("body") or "").format(
-        name=name,
+    rendered = render_response_template(
+        category,
+        name=(first_name or "").strip() or "there",
+        original_subject=original_subject,
         presentation_url=presentation_url(),
         form_url=brief_form_url(),
     )
-    ok = send_email(email_addr, subject, body)
+    if not rendered:
+        print(f"send_classified_response: missing template for {category!r}")
+        return False
+
+    ok = send_email(email_addr, rendered["subject"], rendered["body"])
     if ok:
         print(f"classified response ({category}) → {email_addr}")
     return ok
@@ -585,12 +700,12 @@ def process_due_ooo_followups() -> list[str]:
             item["sent"] = True
             changed = True
             continue
-        # Soft reopen after OOO — use not_interested soft template tone is wrong;
-        # use question (helpful, non-pushy) pack.
+        # Soft reopen after OOO — helpful email-only pack (no calls).
         ok = send_classified_response(
             "question",
             email_addr,
             item.get("first_name") or "",
+            original_subject="following up",
         )
         if ok:
             item["sent"] = True
@@ -788,6 +903,21 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
                 action = "bounced"
 
             elif reply_type == "out_of_office":
+                orig = reply.get("subject") or ""
+                if not _already_sent_response(hit):
+                    if send_classified_response(
+                        "out_of_office",
+                        addr,
+                        first,
+                        original_subject=orig,
+                    ):
+                        hit["notes"] = _append_note(
+                            ws,
+                            row_index,
+                            hit.get("notes") or "",
+                            f"ooo_ack_sent {today}",
+                        )
+                        responses_sent.append(addr)
                 follow_date = schedule_ooo_followup(
                     addr, first, hit.get("company", ""), days=7
                 )
@@ -798,12 +928,18 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
                     f"ooo_followup_{follow_date}",
                 )
                 ooo_scheduled.append(addr)
-                action = f"ooo_followup:{follow_date}"
+                action = f"ooo_ack+followup:{follow_date}"
 
             elif reply_type in ("interested", "question", "not_interested"):
                 already = _already_sent_response(hit)
+                orig = reply.get("subject") or ""
                 if not already:
-                    if send_classified_response(reply_type, addr, first):
+                    if send_classified_response(
+                        reply_type,
+                        addr,
+                        first,
+                        original_subject=orig,
+                    ):
                         update_cell_safe(ws, row_index, MEETING_COL, "response_sent")
                         hit["notes"] = _append_note(
                             ws,
@@ -866,6 +1002,22 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
                     action = "payment_failed"
 
             elif reply_type == "other":
+                orig = reply.get("subject") or ""
+                if not _already_sent_response(hit):
+                    if send_classified_response(
+                        "other",
+                        addr,
+                        first,
+                        original_subject=orig,
+                    ):
+                        update_cell_safe(ws, row_index, MEETING_COL, "response_sent")
+                        hit["notes"] = _append_note(
+                            ws,
+                            row_index,
+                            hit.get("notes") or "",
+                            f"response_sent other {today}",
+                        )
+                        responses_sent.append(addr)
                 path = forward_to_manual_review(reply, hit)
                 hit["notes"] = _append_note(
                     ws,
@@ -874,7 +1026,7 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
                     f"manual_review {today} ({path.name})",
                 )
                 manual_review.append(addr)
-                action = f"manual_review:{path.name}"
+                action = f"other_sent+manual_review:{path.name}"
 
             else:
                 action = "logged"
