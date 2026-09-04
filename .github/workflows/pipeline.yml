@@ -43,6 +43,7 @@ on:
           - warmup_send
           - warmup_process
           - warmup_stats
+          - warmup_reset
           - deliverability
           - blacklist_check
           - daily_summary
@@ -72,6 +73,7 @@ env:
   GOOGLE_SMTP_1: ${{ secrets.GOOGLE_SMTP_1 }}
   GOOGLE_SMTP_2: ${{ secrets.GOOGLE_SMTP_2 }}
   GOOGLE_SMTP_3: ${{ secrets.GOOGLE_SMTP_3 }}
+  GOOGLE_SMTP_VLADISLAV_PASSWORD: ${{ secrets.GOOGLE_SMTP_VLADISLAV_PASSWORD }}
   ZEROBOUNCE_API_KEY: ${{ secrets.ZEROBOUNCE_API_KEY }}
   PRESENTATION_URL: ${{ secrets.PRESENTATION_URL }}
   BRIEF_FORM_URL: ${{ secrets.BRIEF_FORM_URL }}
@@ -765,12 +767,56 @@ jobs:
           GOOGLE_SMTP_1: ${{ secrets.GOOGLE_SMTP_1 }}
           GOOGLE_SMTP_2: ${{ secrets.GOOGLE_SMTP_2 }}
           GOOGLE_SMTP_3: ${{ secrets.GOOGLE_SMTP_3 }}
+          GOOGLE_SMTP_VLADISLAV_PASSWORD: ${{ secrets.GOOGLE_SMTP_VLADISLAV_PASSWORD }}
           IMAP_SERVER: imap.zoho.com
           IMAP_PORT: "993"
           DRY_RUN: "false"
           WARMUP_EXTERNAL_RATIO: "0"
 
       - name: Persist warmup schedule
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/warmup_schedule.json
+          key: warmup-schedule-${{ github.repository }}-${{ github.run_id }}
+
+  warmup_reset:
+    name: warmup_reset
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.job == 'warmup_reset')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore warmup schedule
+        uses: actions/cache@v4
+        with:
+          path: data/warmup_schedule.json
+          key: warmup-schedule-${{ github.repository }}
+          restore-keys: |
+            warmup-schedule-
+
+      - name: Reset warmup schedule to day 1
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          python -m pipeline.warmup reset
+          python -m pipeline.warmup stats
+
+      - name: Persist reset schedule
         if: always()
         uses: actions/cache/save@v4
         with:
