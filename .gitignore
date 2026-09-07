@@ -1,4 +1,7 @@
 .env
+.gh_token
+.env.*
+!.env.example
 service_account.json
 client_secrets.json
 gmail_token.json
