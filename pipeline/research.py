@@ -50,9 +50,18 @@ PERSON_TITLES = [
     "Director",
     "Co-Founder",
     "Managing Director",
+    "Partner",
+    "Managing Partner",
+    "Principal",
+    "CMO",
+    "VP Marketing",
+    "Vice President of Marketing",
+    "Head of Marketing",
+    "Head of Growth",
+    "Marketing Director",
 ]
 
-EMPLOYEE_RANGES = ["1-10", "11-50", "51-200"]
+EMPLOYEE_RANGES = ["1-10", "11-50", "51-200", "201-500"]
 US_LOCATION = ["United States"]
 INTL_LOCATIONS = ["United Kingdom", "Canada", "Australia"]
 
@@ -67,6 +76,8 @@ BATCH_LOCATIONS = [
     "Canada",
     "United Kingdom",
     "Australia",
+    "Ireland",
+    "New Zealand",
 ]
 
 US_MIN_HITS_BEFORE_INTL = 20
@@ -85,11 +96,13 @@ DECISION_TITLE_TOKENS = (
     "founder",
     "president",
     "partner",
+    "principal",
     "director",
     "vp",
     "cmo",
     "head of",
     "chief",
+    "managing",
 )
 
 # Cron rotates over these 15 (verified email filter + US only)
@@ -111,33 +124,68 @@ CRON_VARIANTS = [
     {"keyword": "smile marketing", "industry": "Marketing and Advertising"},
 ]
 
-# Batch --enrich: 25 niche keywords (no email_status filter; multi-geo)
+# Batch --enrich: expanded niche keywords (verified email + multi-geo)
 BATCH_KEYWORDS = [
+    "dental marketing",
+    "dentist marketing",
+    "dental marketing agency",
+    "dental marketing services",
+    "dental practice marketing",
+    "marketing for dentists",
+    "marketing agency for dentists",
+    "dental growth agency",
+    "dental agency",
+    "dental b2b marketing",
+    "dental SEO",
+    "dental seo agency",
+    "dentist seo",
+    "dental PPC",
+    "dental google ads",
+    "dental facebook ads",
+    "dental paid ads",
+    "dental web design",
+    "dental website design",
+    "dental website agency",
     "orthodontist marketing",
     "dental implants marketing",
     "cosmetic dentistry marketing",
+    "invisalign marketing",
+    "periodontist marketing",
+    "oral surgery marketing",
+    "pediatric dentist marketing",
     "dental clinic marketing",
-    "dentist lead generation",
-    "dental growth agency",
-    "healthcare advertising agency",
-    "dental marketing consultant",
-    "dental seo agency",
-    "dentist seo",
-    "dental reputation management",
-    "dental website design",
-    "healthcare branding agency",
-    "dental marketing services",
-    "dental practice marketing",
-    "dental video marketing",
-    "dental content marketing",
-    "medical marketing agency",
-    "healthcare digital marketing",
-    "dental agency",
-    "marketing agency for dentists",
+    "dental practice growth",
+    "dental patient acquisition",
     "dental patient marketing",
+    "dentist lead generation",
+    "dental lead generation",
     "dentist growth",
     "dental outreach",
-    "dental b2b marketing",
+    "dental branding",
+    "dental branding agency",
+    "dental content marketing",
+    "dental video marketing",
+    "dental social media",
+    "dental social media marketing",
+    "dental reputation management",
+    "dental review marketing",
+    "smile marketing",
+    "dental advertising",
+    "dentist ads",
+    "healthcare marketing",
+    "healthcare marketing agency",
+    "healthcare digital marketing",
+    "healthcare advertising agency",
+    "healthcare branding agency",
+    "medical marketing agency",
+    "medical digital marketing",
+    "healthcare lead generation",
+    "clinic marketing agency",
+    "patient acquisition agency",
+    "dental marketing consultant",
+    "dental marketing strategist",
+    "dentist marketing consultant",
+    "dental growth consultant",
 ]
 
 # Back-compat alias
@@ -158,8 +206,16 @@ def get_daily_search_variants(day_of_month: int | None = None) -> list[dict]:
 
 
 def get_all_search_variants() -> list[dict]:
-    """All batch keywords (multi-geo, no email_status filter)."""
-    return [_batch_variant_from_keyword(i, kw) for i, kw in enumerate(BATCH_KEYWORDS)]
+    """All batch keywords (multi-geo, verified-email only — ≈1 credit → 1 lead)."""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for kw in BATCH_KEYWORDS:
+        key = (kw or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(_batch_variant_from_keyword(len(out), kw.strip()))
+    return out
 
 
 def _cron_variant_from_spec(idx: int) -> dict:
@@ -182,9 +238,10 @@ def _batch_variant_from_keyword(idx: int, keyword: str) -> dict:
         "industry": "",
         "organization_locations": list(BATCH_LOCATIONS),
         "person_titles": list(PERSON_TITLES),
-        "email_status": [],
-        "require_verified_email": False,
-        "region": "US/CA/UK/AU",
+        # Verified-only so enrich credits aren't wasted on no-email people.
+        "email_status": ["verified"],
+        "require_verified_email": True,
+        "region": "US/CA/UK/AU/IE/NZ",
         "variant_index": idx,
     }
 

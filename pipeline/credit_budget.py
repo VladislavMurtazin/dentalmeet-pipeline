@@ -10,10 +10,11 @@ ROOT = Path(__file__).resolve().parent.parent
 BUDGET_PATH = ROOT / "data" / "credit_budget.json"
 
 DEFAULT_LIMITS = {
-    "agency_search": {"limit": 1200},
-    "dental_enrichment": {"limit": 1000, "per_client_limit": 50},
-    "reserve": 300,
-    "total_available": 2500,
+    # 2600 Apollo credits / month — stretch across agency + dental.
+    "agency_search": {"limit": 1300},
+    "dental_enrichment": {"limit": 1100, "per_client_limit": 50},
+    "reserve": 200,
+    "total_available": 2600,
 }
 
 
@@ -53,15 +54,28 @@ def load_budget() -> dict:
     if data.get("month") != month:
         data = _default_budget(month)
         save_budget(data)
-    data.setdefault("agency_search", {"spent": 0, "limit": 1200})
+        return data
+
+    # Keep spent; refresh caps when plan changes.
+    agency_limit = DEFAULT_LIMITS["agency_search"]["limit"]
+    dental_limit = DEFAULT_LIMITS["dental_enrichment"]["limit"]
+    per_client = DEFAULT_LIMITS["dental_enrichment"]["per_client_limit"]
+    data.setdefault("agency_search", {"spent": 0, "limit": agency_limit})
     data.setdefault(
         "dental_enrichment",
-        {"spent": 0, "limit": 1000, "per_client_limit": 50, "by_client": {}},
+        {
+            "spent": 0,
+            "limit": dental_limit,
+            "per_client_limit": per_client,
+            "by_client": {},
+        },
     )
+    data["agency_search"]["limit"] = agency_limit
+    data["dental_enrichment"]["limit"] = dental_limit
     data["dental_enrichment"].setdefault("by_client", {})
-    data["dental_enrichment"].setdefault("per_client_limit", 50)
-    data.setdefault("reserve", 300)
-    data.setdefault("total_available", 2500)
+    data["dental_enrichment"]["per_client_limit"] = per_client
+    data["reserve"] = DEFAULT_LIMITS["reserve"]
+    data["total_available"] = DEFAULT_LIMITS["total_available"]
     return data
 
 
@@ -73,18 +87,25 @@ def save_budget(data: dict) -> None:
 def agency_remaining() -> int:
     data = load_budget()
     spent = int(data["agency_search"].get("spent") or 0)
-    limit = int(data["agency_search"].get("limit") or 1200)
+    limit = int(
+        data["agency_search"].get("limit")
+        or DEFAULT_LIMITS["agency_search"]["limit"]
+    )
     return max(0, limit - spent)
 
 
 def dental_remaining(client_email: str | None = None) -> int:
     data = load_budget()
     dent = data["dental_enrichment"]
-    global_left = max(0, int(dent.get("limit") or 1000) - int(dent.get("spent") or 0))
+    limit = int(dent.get("limit") or DEFAULT_LIMITS["dental_enrichment"]["limit"])
+    global_left = max(0, limit - int(dent.get("spent") or 0))
     if not client_email:
         return global_left
     email = client_email.strip().lower()
-    per_limit = int(dent.get("per_client_limit") or 50)
+    per_limit = int(
+        dent.get("per_client_limit")
+        or DEFAULT_LIMITS["dental_enrichment"]["per_client_limit"]
+    )
     client_spent = int((dent.get("by_client") or {}).get(email) or 0)
     return max(0, min(global_left, per_limit - client_spent))
 
@@ -124,15 +145,19 @@ def print_credit_stats() -> None:
     data = load_budget()
     agency = data["agency_search"]
     dental = data["dental_enrichment"]
-    reserve = int(data.get("reserve") or 0)
-    total_cap = int(data.get("total_available") or 2500)
+    reserve = int(data.get("reserve") or DEFAULT_LIMITS["reserve"])
+    total_cap = int(data.get("total_available") or DEFAULT_LIMITS["total_available"])
     agency_spent = int(agency.get("spent") or 0)
     dental_spent = int(dental.get("spent") or 0)
+    agency_limit = int(agency.get("limit") or DEFAULT_LIMITS["agency_search"]["limit"])
+    dental_limit = int(
+        dental.get("limit") or DEFAULT_LIMITS["dental_enrichment"]["limit"]
+    )
     total_used = agency_spent + dental_spent
     print("=== CREDIT USAGE ===")
     print(f"Month: {data.get('month', current_month())}")
-    print(f"Agency search: {agency_spent}/{agency.get('limit', 1200)} spent")
-    print(f"Dental enrichment: {dental_spent}/{dental.get('limit', 1000)} spent")
+    print(f"Agency search: {agency_spent}/{agency_limit} spent")
+    print(f"Dental enrichment: {dental_spent}/{dental_limit} spent")
     print(f"Reserve: {reserve} available")
     print(f"Total: {total_used}/{total_cap} used")
     print("====================")
