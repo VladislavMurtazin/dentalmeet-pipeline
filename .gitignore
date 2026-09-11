@@ -52,3 +52,4 @@ targets/
 logs/
 
 data/conversation_owners.json
+data/fallback_smtp_rotation.json
