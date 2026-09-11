@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from .email_sender import send_email
-from .templates import SIGNATURE
+from .templates import signature_for
 from .to_sheets import is_email
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -316,6 +316,7 @@ def send_upfront_payment_instructions(
 
     name = (first_name or "").strip() or "there"
     subject = "payment details — setup fee"
+    sender = (from_email or "").strip().lower() or None
     body = (
         f"Hi {name},\n"
         f"\n"
@@ -330,13 +331,13 @@ def send_upfront_payment_instructions(
         f"2. Reply with the transaction hash (TXID)\n"
         f"3. I'll confirm within ~1 hour and launch\n"
         f"\n"
-        f"{SIGNATURE}"
+        f"{signature_for(sender)}"
     )
     return send_email(
         email,
         subject,
         body,
-        from_email=(from_email or "").strip().lower() or None,
+        from_email=sender,
     )
 
 
@@ -384,6 +385,6 @@ def send_payment_instructions(
         f"Pay later via USDT TRC20 — I'll send the exact amount + wallet "
         f"when the pilot wraps.\n"
         f"\n"
-        f"{SIGNATURE}"
+        f"{signature_for(sender)}"
     )
     return send_email(email, subject, body, from_email=sender)

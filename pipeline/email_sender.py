@@ -168,6 +168,25 @@ def _apply_unsubscribe_headers(msg) -> None:
     msg["List-Unsubscribe-Post"] = LIST_UNSUBSCRIBE_POST
 
 
+def _remember_thread_owner(to: str, sender: str, *, skip_throttle: bool) -> None:
+    """Lock the first successful client From so later mail stays on that inbox."""
+    if skip_throttle:
+        return
+    to_addr = (to or "").strip().lower()
+    from_addr = (sender or "").strip().lower()
+    if not to_addr or "@" not in to_addr or not from_addr or "@" not in from_addr:
+        return
+    try:
+        from .conversation_owner import get_conversation_owner, set_conversation_owner
+
+        if get_conversation_owner(to_addr):
+            return
+        set_conversation_owner(to_addr, from_addr)
+        print(f"conversation_owner: locked {from_addr} for {to_addr}")
+    except Exception as e:
+        print(f"conversation_owner lock skipped: {e}")
+
+
 def _build_message(
     to: str,
     subject: str,
@@ -264,6 +283,18 @@ def send_email(
     subject = subject or ""
     body_text = body_text or ""
     from_email = (from_email or "").strip().lower() or None
+
+    # Keep the whole client thread on the inbox that started it.
+    if not from_email and not skip_throttle:
+        try:
+            from .conversation_owner import get_conversation_owner
+
+            owner = get_conversation_owner(to)
+            if owner:
+                from_email = owner
+                print(f"send_email: thread owner {from_email} → {to}")
+        except Exception:
+            pass
 
     if from_email:
         try:
@@ -377,6 +408,7 @@ def send_email(
             print("=== end DRY_RUN ===")
             if not skip_throttle:
                 record_send(email, to)
+            _remember_thread_owner(to, email, skip_throttle=skip_throttle)
             return True
         try:
             _send_via_smtp(
@@ -391,6 +423,7 @@ def send_email(
             if not skip_throttle:
                 record_send(email, to)
             print(f"sent via {provider} {email} (fixed account {idx + 1}/{len(accounts)})")
+            _remember_thread_owner(to, email, skip_throttle=skip_throttle)
             return True
         except Exception as e:
             print(f"send_email {provider} fail fixed account {email}: {e}")
@@ -453,6 +486,7 @@ def send_email(
         print("=== end DRY_RUN ===")
         record_send(email, to)
         _advance_rotation(idx, len(accounts))
+        _remember_thread_owner(to, email, skip_throttle=False)
         return True
 
     n = len(accounts)
@@ -500,6 +534,7 @@ def send_email(
             record_send(email, to)
             _advance_rotation(idx, n)
             print(f"sent via SMTP {email} (account {idx + 1}/{n})")
+            _remember_thread_owner(to, email, skip_throttle=False)
             return True
         except Exception as e:
             last_err = e

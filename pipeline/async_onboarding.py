@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from .email_sender import send_email
-from .templates import SIGNATURE
+from .templates import signature_for
 from .to_sheets import (
     get_all_values_safe,
     is_email,
@@ -153,14 +153,24 @@ def _is_plan_b_send_mode(send_mode: str) -> bool:
     return "dentalmeet" in text or "our account" in text
 
 
-def send_async_onboarding(lead_email: str, first_name: str, company: str) -> bool:
+def send_async_onboarding(
+    lead_email: str,
+    first_name: str,
+    company: str,
+    *,
+    from_email: str | None = None,
+) -> bool:
     """Email presentation + onboarding form links to an interested lead."""
+    from .conversation_owner import resolve_from_email
+    from .templates import signature_for
+
     name = (first_name or "").strip() or "there"
     email = (lead_email or "").strip()
     if not is_email(email):
         print(f"send_async_onboarding: bad email {email!r}")
         return False
 
+    sender = (from_email or "").strip().lower() or resolve_from_email(email)
     subject = "next steps — async onboarding"
     form = brief_form_url()
     preso = presentation_url()
@@ -192,13 +202,13 @@ def send_async_onboarding(lead_email: str, first_name: str, company: str) -> boo
         f"\n"
         f"Any questions? Just reply — I respond within a few hours.\n"
         f"\n"
-        f"{SIGNATURE}"
+        f"{signature_for(sender)}"
         f"\n"
         f"Form again (bookmark this): {form}\n"
     )
-    ok = send_email(email, subject, body)
+    ok = send_email(email, subject, body, from_email=sender)
     if ok:
-        print(f"async onboarding sent → {email} ({company or 'n/a'})")
+        print(f"async onboarding sent → {email} ({company or 'n/a'}) via {sender or 'rotation'}")
     return ok
 
 
@@ -331,7 +341,7 @@ def _pilot_welcome_email(
         f"— Only qualified meetings are billed\n"
         f"— Full breakdown report with every invoice\n"
         f"\n"
-        f"{SIGNATURE}"
+        f"{signature_for(from_email)}"
     )
     return send_email(email, subject, body, from_email=from_email)
 
@@ -355,7 +365,7 @@ def _repeat_welcome_email(
         f"\n"
         f"Payment details are in the next email (USDT TRC20).\n"
         f"\n"
-        f"{SIGNATURE}"
+        f"{signature_for(from_email)}"
     )
     ok = send_email(email, subject, body, from_email=from_email)
     send_upfront_payment_instructions(email, first, amount=300, from_email=from_email)
@@ -374,7 +384,7 @@ def _continuation_email(name: str, email: str, *, from_email: str | None = None)
         f"\n"
         f"If anything in the brief changed, just reply with the updates.\n"
         f"\n"
-        f"{SIGNATURE}"
+        f"{signature_for(from_email)}"
     )
     return send_email(email, subject, body, from_email=from_email)
 

@@ -166,19 +166,10 @@ def send_form_fix_email(
 ) -> bool:
     """Ask the lead to resubmit with corrected fields."""
     from pipeline.email_sender import send_email
-    from pipeline.templates import SIGNATURE
+    from pipeline.templates import signature_for
 
     first = (name or "").strip().split()[0] if (name or "").strip() else "there"
     bullets = "\n".join(f"• {e}" for e in errors)
-    body = (
-        f"Hi {first},\n\n"
-        f"Thanks for submitting the onboarding form — a few fields need a quick fix "
-        f"before we can launch:\n\n"
-        f"{bullets}\n\n"
-        f"Please resubmit the form with corrections "
-        f"(or reply to this email with the missing info).\n\n"
-        f"{SIGNATURE}"
-    )
     sender = (from_email or "").strip().lower() or None
     if not sender:
         try:
@@ -187,6 +178,15 @@ def send_form_fix_email(
             sender = resolve_from_email(email)
         except Exception:
             sender = None
+    body = (
+        f"Hi {first},\n\n"
+        f"Thanks for submitting the onboarding form — a few fields need a quick fix "
+        f"before we can launch:\n\n"
+        f"{bullets}\n\n"
+        f"Please resubmit the form with corrections "
+        f"(or reply to this email with the missing info).\n\n"
+        f"{signature_for(sender)}"
+    )
     return send_email(
         email,
         "almost there — need a couple details to launch",
