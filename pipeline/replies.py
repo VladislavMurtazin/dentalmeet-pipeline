@@ -764,10 +764,30 @@ def _already_sent_response(hit: dict) -> bool:
     return "response_sent" in blob or "async_onboarding_sent" in blob
 
 
+def strip_plus_alias(addr: str) -> str:
+    """Normalize user+tag@domain → user@domain (Gmail-style plus aliases).
+
+    Used so replies from ``trestovtrest8+canned.response@gmail.com`` match a
+    sheet row with ``trestovtrest8@gmail.com``.
+    """
+    email_addr = (addr or "").strip().lower()
+    if "@" not in email_addr:
+        return email_addr
+    local, domain = email_addr.split("@", 1)
+    if "+" in local:
+        local = local.split("+", 1)[0]
+    return f"{local}@{domain}"
+
+
 def _match_lead_for_reply(reply: dict, by_email: dict[str, dict]) -> dict | None:
     addr = (reply.get("from_email") or "").strip().lower()
+    if not addr:
+        return None
     if addr in by_email:
         return by_email[addr]
+    base = strip_plus_alias(addr)
+    if base != addr and base in by_email:
+        return by_email[base]
     return None
 
 
@@ -852,7 +872,7 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
             print(f"bounce detected: {recipient} (via {reply.get('account_email')})")
             continue
 
-        if is_suppressed(addr):
+        if is_suppressed(addr) or is_suppressed(strip_plus_alias(addr)):
             print(f"skip suppressed: {addr}")
             skipped.append(addr)
             if fp:
