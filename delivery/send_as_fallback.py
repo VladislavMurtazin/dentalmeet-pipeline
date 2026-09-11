@@ -1,9 +1,16 @@
-"""Plan B: send dental outreach from DentalMeet Zoho accounts on behalf of client."""
+"""Plan B: send dental outreach from DentalMeet Zoho accounts on behalf of client.
+
+Clinic sends rotate across cold SMTP inboxes (round-robin) so one account
+does not blast the whole daily batch. Reply-To matches From. Pin one inbox with
+FALLBACK_ROTATE=0 and FALLBACK_FROM_EMAIL=...
+"""
 
 from __future__ import annotations
 
 import argparse
 import csv
+import json
+import math
 import os
 import sys
 import time
@@ -17,14 +24,29 @@ load_dotenv()
 ROOT = Path(__file__).resolve().parent.parent
 TARGETS_DIR = ROOT / "targets"
 LOGS_DIR = ROOT / "logs"
+ROTATION_PATH = ROOT / "data" / "fallback_smtp_rotation.json"
 
 FALLBACK_FROM = os.environ.get(
     "FALLBACK_FROM_EMAIL", "hello@dentalmeet.agency"
 ).strip()
+FALLBACK_POOL = os.environ.get("FALLBACK_FROM_POOL", "").strip()
+
+
+def _rotate_enabled() -> bool:
+    return os.environ.get("FALLBACK_ROTATE", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
 
 
 def _safe(email: str) -> str:
     return email.strip().lower().replace("@", "_at_")
+
+
+def _norm(email: str) -> str:
+    return (email or "").strip().lower()
 
 
 def _targets_path(client_email: str) -> Path:
@@ -34,6 +56,103 @@ def _targets_path(client_email: str) -> Path:
 def _sent_log_path(client_email: str) -> Path:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     return LOGS_DIR / f"{_safe(client_email)}_fallback_sent.csv"
+
+
+def _load_rotation_index(n: int) -> int:
+    if n <= 0:
+        return 0
+    try:
+        data = json.loads(ROTATION_PATH.read_text(encoding="utf-8"))
+        return int(data.get("next_index", 0)) % n
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return 0
+
+
+def _save_rotation_index(index: int, n: int) -> None:
+    if n <= 0:
+        return
+    ROTATION_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ROTATION_PATH.write_text(
+        json.dumps({"next_index": int(index) % n}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def load_fallback_senders() -> list[str]:
+    """Ordered From addresses for Plan B clinic sends."""
+    if not _rotate_enabled():
+        return [_norm(FALLBACK_FROM)] if FALLBACK_FROM else []
+
+    cold: list[str] = []
+    try:
+        from pipeline.email_sender import load_smtp_accounts
+
+        cold = [_norm(e) for e, _ in load_smtp_accounts(cold_only=True) if e]
+    except Exception as e:
+        print(f"Plan B: load_smtp_accounts skipped: {e}")
+
+    if not cold:
+        # Local/CI without passwords: still rotate over catalog emails.
+        try:
+            from pipeline.smtp_accounts import load_account_records
+
+            cold = [
+                _norm(a["email"])
+                for a in load_account_records(
+                    enabled_only=True, cold_only=True, with_password=False
+                )
+                if a.get("email")
+            ]
+        except Exception as e:
+            print(f"Plan B: load_account_records skipped: {e}")
+
+    if FALLBACK_POOL:
+        wanted = [_norm(x) for x in FALLBACK_POOL.split(",") if _norm(x)]
+        have = set(cold)
+        pooled = [e for e in wanted if e in have]
+        if pooled:
+            return pooled
+        print("Plan B: FALLBACK_FROM_POOL unmatched — using all cold accounts")
+
+    if cold:
+        return cold
+    return [_norm(FALLBACK_FROM)] if FALLBACK_FROM else []
+
+
+def pick_next_fallback_sender(
+    accounts: list[str],
+    *,
+    per_run_counts: dict[str, int] | None = None,
+    max_per_account: int | None = None,
+) -> str | None:
+    """Round-robin across accounts; skip daily / per-run caps."""
+    from pipeline.send_throttle import is_account_available, remaining_capacity
+
+    pool = [a for a in accounts if a]
+    if not pool:
+        return None
+
+    n = len(pool)
+    start = _load_rotation_index(n)
+    counts = per_run_counts if per_run_counts is not None else {}
+
+    for offset in range(n):
+        idx = (start + offset) % n
+        sender = pool[idx]
+        if max_per_account is not None and counts.get(sender, 0) >= max_per_account:
+            continue
+        try:
+            if not is_account_available(sender):
+                print(f"Plan B rotate skip {sender} (limit/cooldown)")
+                continue
+            if remaining_capacity(sender) <= 0:
+                continue
+        except Exception as e:
+            print(f"Plan B rotate capacity check {sender}: {e}")
+        _save_rotation_index(idx + 1, n)
+        return sender
+
+    return None
 
 
 def load_client_info(client_email: str) -> dict:
@@ -49,7 +168,9 @@ def build_fallback_email(
 ) -> tuple[str, str]:
     """Build subject/body signed as client, sent from our account."""
     first = (target.get("first_name") or "").strip() or "there"
-    practice = (target.get("company") or target.get("organization_name") or "your practice").strip()
+    practice = (
+        target.get("company") or target.get("organization_name") or "your practice"
+    ).strip()
     owner = (client_info.get("name") or "").strip() or "Our team"
     owner_first = owner.split()[0] if owner else "Our team"
     company = (client_info.get("company") or "").strip() or "our agency"
@@ -89,11 +210,18 @@ def send_as_fallback(
     *,
     from_email: str | None = None,
 ) -> bool:
-    """Send via Zoho; Reply-To stays on our inbox for forwarding."""
+    """Send via Zoho; Reply-To matches From so replies land on that inbox."""
     from pipeline.email_sender import send_email
 
     to = (target.get("email") or "").strip()
-    sender = (from_email or FALLBACK_FROM).strip()
+    sender = _norm(from_email)
+    if not sender:
+        sender = pick_next_fallback_sender(load_fallback_senders()) or _norm(
+            FALLBACK_FROM
+        )
+    if not sender:
+        print(f"send_as_fallback: no sender for {to}")
+        return False
     if os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes"):
         print(f"DRY_RUN fallback {sender} → {to}: {subject}")
         return True
@@ -129,12 +257,21 @@ def forward_reply_to_client(
     if os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes"):
         print(f"DRY_RUN forward → {client}: {subject}")
         return True
-    return send_email(client, subject, body, skip_unsubscribe=True)
+    from_email = None
+    try:
+        from pipeline.conversation_owner import resolve_from_email
+
+        from_email = resolve_from_email(client)
+    except Exception:
+        from_email = None
+    return send_email(
+        client, subject, body, from_email=from_email, skip_unsubscribe=True
+    )
 
 
 def run_campaign(client_email: str, daily_limit: int = 25) -> dict:
-    """Send first-touch emails via Plan B (Zoho fallback accounts)."""
-    from .send_as_client import _load_sent_emails, warmup_daily_limit
+    """Send first-touch emails via Plan B, rotating SMTP From each send."""
+    from .send_as_client import warmup_daily_limit
 
     client = load_client_info(client_email)
     limit = warmup_daily_limit(client, daily_limit)
@@ -143,6 +280,17 @@ def run_campaign(client_email: str, daily_limit: int = 25) -> dict:
         raise FileNotFoundError(
             f"No targets file {path}. Run research_dental build_list first."
         )
+
+    accounts = load_fallback_senders()
+    if not accounts:
+        raise RuntimeError("No Plan B SMTP accounts available")
+
+    max_per_account = max(1, math.ceil(limit / len(accounts)))
+    per_run: dict[str, int] = {a: 0 for a in accounts}
+    print(
+        f"Plan B rotation: {len(accounts)} accounts {accounts}; "
+        f"limit={limit}, max_per_account={max_per_account}"
+    )
 
     sent_path = _sent_log_path(client_email)
     already: set[str] = set()
@@ -153,12 +301,13 @@ def run_campaign(client_email: str, daily_limit: int = 25) -> dict:
                     already.add(row["email"].strip().lower())
 
     sent = failed = skipped = 0
+    by_from: dict[str, int] = {}
     with path.open(newline="", encoding="utf-8") as f:
         targets = list(csv.DictReader(f))
 
     write_header = not sent_path.exists()
     with sent_path.open("a", newline="", encoding="utf-8") as log_f:
-        fields = ["date", "email", "company", "subject", "mode"]
+        fields = ["date", "email", "company", "subject", "mode", "from"]
         writer = csv.DictWriter(log_f, fieldnames=fields)
         if write_header:
             writer.writeheader()
@@ -170,9 +319,21 @@ def run_campaign(client_email: str, daily_limit: int = 25) -> dict:
             if not email or email in already:
                 skipped += 1
                 continue
+
+            sender = pick_next_fallback_sender(
+                accounts,
+                per_run_counts=per_run,
+                max_per_account=max_per_account,
+            )
+            if not sender:
+                print("Plan B: stopping — no available senders left this run")
+                break
+
             subject, body = build_fallback_email(t, client, t.get("opener", ""))
             try:
-                ok = send_as_fallback(client_email, t, subject, body)
+                ok = send_as_fallback(
+                    client_email, t, subject, body, from_email=sender
+                )
                 if not ok:
                     failed += 1
                     continue
@@ -183,18 +344,29 @@ def run_campaign(client_email: str, daily_limit: int = 25) -> dict:
                         "company": t.get("company", ""),
                         "subject": subject,
                         "mode": "fallback",
+                        "from": sender,
                     }
                 )
                 sent += 1
+                per_run[sender] = per_run.get(sender, 0) + 1
+                by_from[sender] = by_from.get(sender, 0) + 1
                 already.add(email)
-                print(f"[fallback {sent}/{limit}] sent → {email}")
+                print(f"[fallback {sent}/{limit}] {sender} → {email}")
                 if os.environ.get("DRY_RUN", "").lower() not in ("1", "true", "yes"):
                     time.sleep(45)
             except Exception as e:
                 failed += 1
                 print(f"fallback fail {email}: {e}")
 
-    summary = {"sent": sent, "failed": failed, "skipped": skipped, "limit": limit, "mode": "fallback"}
+    summary = {
+        "sent": sent,
+        "failed": failed,
+        "skipped": skipped,
+        "limit": limit,
+        "mode": "fallback",
+        "by_from": by_from,
+        "accounts": accounts,
+    }
     print("fallback campaign summary:", summary)
     return summary
 
