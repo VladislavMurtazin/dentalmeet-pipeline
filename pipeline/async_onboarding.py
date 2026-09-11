@@ -469,14 +469,21 @@ def check_form_responses() -> dict:
         if not check["ok"]:
             print(f"row {i}: INVALID {email}: {check['errors']}")
             try:
-                from .conversation_owner import resolve_from_email
+                from .conversation_owner import resolve_post_form_from_email
 
-                send_form_fix_email(
-                    email,
-                    name,
-                    check["errors"],
-                    from_email=resolve_from_email(email),
-                )
+                owner = resolve_post_form_from_email(email)
+                if not owner:
+                    print(
+                        f"row {i}: ERROR no Google Workspace SMTP password — "
+                        f"skipping fix email for {email} (will not use Zoho)"
+                    )
+                else:
+                    send_form_fix_email(
+                        email,
+                        name,
+                        check["errors"],
+                        from_email=owner,
+                    )
             except Exception as e:
                 print(f"row {i}: fix email failed: {e}")
             update_cell_safe(
@@ -498,24 +505,36 @@ def check_form_responses() -> dict:
             record = create_client_record(email, company, brief)
             update_cell_safe(form_ws, i, processed_idx + 1, "Processed")
 
-            from .conversation_owner import resolve_from_email, set_conversation_owner
+            from .conversation_owner import resolve_post_form_from_email
 
-            owner = resolve_from_email(email)
-            if owner:
-                set_conversation_owner(email, owner)
+            owner = resolve_post_form_from_email(email)
+            if not owner:
+                print(
+                    f"row {i}: ERROR no Google Workspace SMTP password — "
+                    f"skipping post-form client emails for {email} "
+                    f"(will not use Zoho)"
+                )
+            else:
                 print(f"row {i}: thread owner {owner}")
 
-            if record.get("continuation"):
+            if owner and record.get("continuation"):
                 _continuation_email(name, email, from_email=owner)
                 label = "continuation"
-            elif record.get("is_repeat"):
+            elif owner and record.get("is_repeat"):
                 _repeat_welcome_email(name, email, from_email=owner)
                 label = "repeat + $300 upfront"
-            else:
+            elif owner:
                 _pilot_welcome_email(name, email, plan_b=plan_b, from_email=owner)
                 label = "pilot $0 upfront"
+            else:
+                if record.get("continuation"):
+                    label = "continuation (email skipped)"
+                elif record.get("is_repeat"):
+                    label = "repeat (email skipped)"
+                else:
+                    label = "pilot (email skipped)"
 
-            if plan_b and not record.get("continuation"):
+            if owner and plan_b and not record.get("continuation"):
                 from delivery.connect_workspace import set_workspace_status
                 from delivery.workspace_transparency import send_plan_b_confirmation
 
@@ -524,6 +543,14 @@ def check_form_responses() -> dict:
                     email, name=name, company=company, from_email=owner
                 )
                 print(f"row {i}: Plan B selected — skipped OAuth, sent confirmation")
+            elif plan_b and not record.get("continuation"):
+                from delivery.connect_workspace import set_workspace_status
+
+                set_workspace_status(email, "fallback")
+                print(
+                    f"row {i}: Plan B selected — skipped OAuth; "
+                    f"confirmation email skipped (no Google SMTP)"
+                )
 
             stats["processed"] += 1
             print(f"row {i}: processed {email} ({label})")

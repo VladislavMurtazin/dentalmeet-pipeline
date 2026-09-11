@@ -259,11 +259,17 @@ def forward_reply_to_client(
         return True
     from_email = None
     try:
-        from pipeline.conversation_owner import resolve_from_email
+        from pipeline.conversation_owner import resolve_post_form_from_email
 
-        from_email = resolve_from_email(client)
+        from_email = resolve_post_form_from_email(client)
     except Exception:
         from_email = None
+    if not from_email:
+        print(
+            f"forward_reply_to_client: ERROR no Google Workspace SMTP "
+            f"password — refusing Zoho fallback for {client}"
+        )
+        return False
     return send_email(
         client, subject, body, from_email=from_email, skip_unsubscribe=True
     )

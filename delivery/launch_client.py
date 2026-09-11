@@ -170,14 +170,27 @@ def send_form_fix_email(
 
     first = (name or "").strip().split()[0] if (name or "").strip() else "there"
     bullets = "\n".join(f"• {e}" for e in errors)
-    sender = (from_email or "").strip().lower() or None
-    if not sender:
-        try:
-            from pipeline.conversation_owner import resolve_from_email
+    sender = None
+    try:
+        from pipeline.conversation_owner import (
+            is_google_workspace_sender,
+            resolve_post_form_from_email,
+        )
 
-            sender = resolve_from_email(email)
-        except Exception:
-            sender = None
+        proposed = (from_email or "").strip().lower()
+        if proposed and is_google_workspace_sender(proposed):
+            sender = proposed
+        else:
+            sender = resolve_post_form_from_email(email)
+    except Exception as e:
+        print(f"send_form_fix_email: Google owner resolve failed: {e}")
+        sender = None
+    if not sender:
+        print(
+            f"send_form_fix_email: ERROR no Google Workspace SMTP password — "
+            f"refusing Zoho fallback for {email}"
+        )
+        return False
     body = (
         f"Hi {first},\n\n"
         f"Thanks for submitting the onboarding form — a few fields need a quick fix "
@@ -285,11 +298,16 @@ def launch_client(
         if send_connect_link:
             try:
                 from .connect_workspace import send_connect_instructions
-                from pipeline.conversation_owner import resolve_from_email
+                from pipeline.conversation_owner import resolve_post_form_from_email
 
-                send_connect_instructions(
-                    email, name, from_email=resolve_from_email(email)
-                )
+                owner = resolve_post_form_from_email(email)
+                if not owner:
+                    print(
+                        f"launch: ERROR no Google Workspace SMTP password — "
+                        f"skipping connect link for {email} (will not use Zoho)"
+                    )
+                else:
+                    send_connect_instructions(email, name, from_email=owner)
                 print(f"launch: Workspace connect link sent → {email}")
             except Exception as e:
                 result["errors"].append(f"connect link failed: {e}")

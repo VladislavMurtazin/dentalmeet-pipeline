@@ -147,12 +147,25 @@ def send_plan_b_confirmation(
     subject, body = generate_plan_b_confirmation(
         {"agency_owner_name": name, "client_email": email, "company": company}
     )
-    sender = (from_email or "").strip().lower() or None
-    if not sender:
-        try:
-            from pipeline.conversation_owner import resolve_from_email
+    sender = None
+    try:
+        from pipeline.conversation_owner import (
+            is_google_workspace_sender,
+            resolve_post_form_from_email,
+        )
 
-            sender = resolve_from_email(email)
-        except Exception:
-            sender = None
+        proposed = (from_email or "").strip().lower()
+        if proposed and is_google_workspace_sender(proposed):
+            sender = proposed
+        else:
+            sender = resolve_post_form_from_email(email)
+    except Exception as e:
+        print(f"send_plan_b_confirmation: Google owner resolve failed: {e}")
+        sender = None
+    if not sender:
+        print(
+            f"send_plan_b_confirmation: ERROR no Google Workspace SMTP "
+            f"password — refusing Zoho fallback for {email}"
+        )
+        return False
     return send_email(email, subject, body, from_email=sender)
