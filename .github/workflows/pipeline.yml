@@ -331,6 +331,7 @@ jobs:
             data/reply_inbox_failures.json
             data/ooo_followups.json
             data/decline_counts.json
+            data/conversation_owners.json
           key: replies-state-${{ github.repository }}
           restore-keys: |
             replies-state-
@@ -383,6 +384,7 @@ jobs:
             data/reply_inbox_failures.json
             data/ooo_followups.json
             data/decline_counts.json
+            data/conversation_owners.json
           key: replies-state-${{ github.repository }}-${{ github.run_id }}
 
   check_forms:
@@ -416,11 +418,20 @@ jobs:
             printf '%s' "$GMAIL_TOKEN_JSON" > gmail_token.json
           fi
 
+      - name: Restore conversation owner state
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/conversation_owners.json
+          key: conversation-owners-${{ github.repository }}
+          restore-keys: |
+            conversation-owners-
+
       - name: Validate required secrets
         run: |
           set -euo pipefail
           missing=0
-          for name in GOOGLE_SERVICE_ACCOUNT SHEET_NAME; do
+          for name in GOOGLE_SERVICE_ACCOUNT SHEET_NAME SMTP_ACCOUNTS SMTP_APP_PASSWORDS; do
             if [ -z "${!name}" ]; then
               echo "::error::Missing required secret/env: $name"
               missing=1
@@ -439,6 +450,13 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
           SHEET_NAME: ${{ secrets.SHEET_NAME }}
           WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
+          SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
+          SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          GOOGLE_SMTP_ACCOUNTS: ${{ secrets.GOOGLE_SMTP_ACCOUNTS }}
+          GOOGLE_SMTP_APP_PASSWORDS: ${{ secrets.GOOGLE_SMTP_APP_PASSWORDS }}
+          GOOGLE_SMTP_1: ${{ secrets.GOOGLE_SMTP_1 }}
+          GOOGLE_SMTP_2: ${{ secrets.GOOGLE_SMTP_2 }}
+          GOOGLE_SMTP_3: ${{ secrets.GOOGLE_SMTP_3 }}
           GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           CALENDLY_URL: ${{ secrets.CALENDLY_URL }}
@@ -452,6 +470,14 @@ jobs:
           OAUTH_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
           OAUTH_REDIRECT_URI: ${{ secrets.OAUTH_REDIRECT_URI }}
           GMAIL_TOKEN_FILE: gmail_token.json
+
+      - name: Persist conversation owner state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/conversation_owners.json
+          key: conversation-owners-${{ github.repository }}-${{ github.run_id }}
 
   launch_pending:
     name: launch_pending
@@ -483,7 +509,16 @@ jobs:
           if [ -n "${GMAIL_TOKEN_JSON:-}" ]; then
             printf '%s' "$GMAIL_TOKEN_JSON" > gmail_token.json
           fi
-          mkdir -p tokens targets logs
+          mkdir -p tokens targets logs data
+
+      - name: Restore conversation owner state
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/conversation_owners.json
+          key: conversation-owners-${{ github.repository }}
+          restore-keys: |
+            conversation-owners-
 
       - name: Launch pending client campaigns
         run: |
@@ -493,6 +528,13 @@ jobs:
           APOLLO_KEY: ${{ secrets.APOLLO_KEY }}
           GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
           SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
+          SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          GOOGLE_SMTP_ACCOUNTS: ${{ secrets.GOOGLE_SMTP_ACCOUNTS }}
+          GOOGLE_SMTP_APP_PASSWORDS: ${{ secrets.GOOGLE_SMTP_APP_PASSWORDS }}
+          GOOGLE_SMTP_1: ${{ secrets.GOOGLE_SMTP_1 }}
+          GOOGLE_SMTP_2: ${{ secrets.GOOGLE_SMTP_2 }}
+          GOOGLE_SMTP_3: ${{ secrets.GOOGLE_SMTP_3 }}
           GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           PRESENTATION_URL: ${{ secrets.PRESENTATION_URL }}
@@ -504,6 +546,14 @@ jobs:
           OAUTH_REDIRECT_URI: ${{ secrets.OAUTH_REDIRECT_URI }}
           GMAIL_TOKEN_FILE: gmail_token.json
           DRY_RUN: "false"
+
+      - name: Persist conversation owner state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/conversation_owners.json
+          key: conversation-owners-${{ github.repository }}-${{ github.run_id }}
 
   weekly_report:
     name: weekly_report

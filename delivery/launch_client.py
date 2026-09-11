@@ -157,13 +157,27 @@ def _update_client_status(client_email: str, status: str, note: str = "") -> Non
             update_cell_safe(ws, row_index, cols["Notes"], new_notes)
 
 
-def send_form_fix_email(email: str, name: str, errors: list[str]) -> bool:
+def send_form_fix_email(
+    email: str,
+    name: str,
+    errors: list[str],
+    *,
+    from_email: str | None = None,
+) -> bool:
     """Ask the lead to resubmit with corrected fields."""
     from pipeline.email_sender import send_email
-    from pipeline.templates import SIGNATURE
+    from pipeline.templates import signature_for
 
     first = (name or "").strip().split()[0] if (name or "").strip() else "there"
     bullets = "\n".join(f"• {e}" for e in errors)
+    sender = (from_email or "").strip().lower() or None
+    if not sender:
+        try:
+            from pipeline.conversation_owner import resolve_from_email
+
+            sender = resolve_from_email(email)
+        except Exception:
+            sender = None
     body = (
         f"Hi {first},\n\n"
         f"Thanks for submitting the onboarding form — a few fields need a quick fix "
@@ -171,12 +185,13 @@ def send_form_fix_email(email: str, name: str, errors: list[str]) -> bool:
         f"{bullets}\n\n"
         f"Please resubmit the form with corrections "
         f"(or reply to this email with the missing info).\n\n"
-        f"{SIGNATURE}"
+        f"{signature_for(sender)}"
     )
     return send_email(
         email,
         "almost there — need a couple details to launch",
         body,
+        from_email=sender,
     )
 
 
@@ -270,8 +285,11 @@ def launch_client(
         if send_connect_link:
             try:
                 from .connect_workspace import send_connect_instructions
+                from pipeline.conversation_owner import resolve_from_email
 
-                send_connect_instructions(email, name)
+                send_connect_instructions(
+                    email, name, from_email=resolve_from_email(email)
+                )
                 print(f"launch: Workspace connect link sent → {email}")
             except Exception as e:
                 result["errors"].append(f"connect link failed: {e}")

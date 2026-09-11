@@ -156,7 +156,12 @@ def refresh_tokens(client_email: str):
     return creds
 
 
-def send_connect_instructions(client_email: str, client_name: str = "") -> bool:
+def send_connect_instructions(
+    client_email: str,
+    client_name: str = "",
+    *,
+    from_email: str | None = None,
+) -> bool:
     """Email the client a secure OAuth link to connect Workspace."""
     from pipeline.email_sender import send_email
     from pipeline.to_sheets import is_email
@@ -173,7 +178,15 @@ def send_connect_instructions(client_email: str, client_name: str = "") -> bool:
             "oauth_url": oauth_url,
         }
     )
-    return send_email(client_email, subject, body)
+    sender = (from_email or "").strip().lower() or None
+    if not sender:
+        try:
+            from pipeline.conversation_owner import resolve_from_email
+
+            sender = resolve_from_email(client_email)
+        except Exception:
+            sender = None
+    return send_email(client_email, subject, body, from_email=sender)
 
 
 def set_workspace_status(client_email: str, status: str) -> None:
@@ -215,6 +228,7 @@ def get_workspace_status(client_email: str) -> str:
 
 def decline_workspace(client_email: str, client_name: str = "") -> bool:
     """Client refused Workspace — switch to Plan B fallback mode."""
+    from pipeline.conversation_owner import resolve_from_email
     from pipeline.email_sender import send_email
     from pipeline.to_sheets import is_email
 
@@ -225,7 +239,12 @@ def decline_workspace(client_email: str, client_name: str = "") -> bool:
     subject, body = generate_plan_b_confirmation(
         {"agency_owner_name": client_name, "client_email": email}
     )
-    ok = send_email(email, subject, body)
+    ok = send_email(
+        email,
+        subject,
+        body,
+        from_email=resolve_from_email(email),
+    )
     print(f"workspace declined → fallback mode for {email}")
     return ok
 

@@ -51,3 +51,4 @@ tokens/
 targets/
 logs/
 
+data/conversation_owners.json

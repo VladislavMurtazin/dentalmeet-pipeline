@@ -32,6 +32,15 @@ SIGNATURE = (
     "hello@dentalmeet.agency"
 )
 
+
+def signature_for(from_email: str | None = None) -> str:
+    """Signature using the actual From address (avoids hello@ when another inbox sent)."""
+    addr = (from_email or "").strip().lower()
+    if not addr:
+        return SIGNATURE
+    return f"— Vladislav\nFounder, DentalMeet\n{addr}"
+
+
 # Cold agency outreach signature — Founder only, no call CTA.
 AGENCY_SIGNATURE = (
     "— Vladislav\n"
