@@ -285,12 +285,24 @@ def send_email(
     from_email = (from_email or "").strip().lower() or None
 
     # Keep the whole client thread on the inbox that started it.
-    if not from_email and not skip_throttle:
+    # After the onboarding form, a Google owner must win over Zoho.
+    if not skip_throttle:
         try:
-            from .conversation_owner import get_conversation_owner
+            from .conversation_owner import (
+                get_conversation_owner,
+                is_google_workspace_sender,
+            )
 
             owner = get_conversation_owner(to)
-            if owner:
+            if owner and is_google_workspace_sender(owner):
+                if from_email and from_email != owner:
+                    print(
+                        f"send_email: post-form keeping Google {owner} "
+                        f"(not {from_email}) → {to}"
+                    )
+                from_email = owner
+                print(f"send_email: thread owner {from_email} → {to}")
+            elif not from_email and owner:
                 from_email = owner
                 print(f"send_email: thread owner {from_email} → {to}")
         except Exception:

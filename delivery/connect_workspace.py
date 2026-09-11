@@ -178,14 +178,27 @@ def send_connect_instructions(
             "oauth_url": oauth_url,
         }
     )
-    sender = (from_email or "").strip().lower() or None
-    if not sender:
-        try:
-            from pipeline.conversation_owner import resolve_from_email
+    sender = None
+    try:
+        from pipeline.conversation_owner import (
+            is_google_workspace_sender,
+            resolve_post_form_from_email,
+        )
 
-            sender = resolve_from_email(client_email)
-        except Exception:
-            sender = None
+        proposed = (from_email or "").strip().lower()
+        if proposed and is_google_workspace_sender(proposed):
+            sender = proposed
+        else:
+            sender = resolve_post_form_from_email(client_email)
+    except Exception as e:
+        print(f"send_connect_instructions: Google owner resolve failed: {e}")
+        sender = None
+    if not sender:
+        print(
+            f"send_connect_instructions: ERROR no Google Workspace SMTP "
+            f"password — refusing Zoho fallback for {client_email}"
+        )
+        return False
     return send_email(client_email, subject, body, from_email=sender)
 
 
@@ -228,7 +241,7 @@ def get_workspace_status(client_email: str) -> str:
 
 def decline_workspace(client_email: str, client_name: str = "") -> bool:
     """Client refused Workspace — switch to Plan B fallback mode."""
-    from pipeline.conversation_owner import resolve_from_email
+    from pipeline.conversation_owner import resolve_post_form_from_email
     from pipeline.email_sender import send_email
     from pipeline.to_sheets import is_email
 
@@ -239,11 +252,18 @@ def decline_workspace(client_email: str, client_name: str = "") -> bool:
     subject, body = generate_plan_b_confirmation(
         {"agency_owner_name": client_name, "client_email": email}
     )
+    sender = resolve_post_form_from_email(email)
+    if not sender:
+        print(
+            f"decline_workspace: ERROR no Google Workspace SMTP password — "
+            f"refusing Zoho fallback for {email}"
+        )
+        return False
     ok = send_email(
         email,
         subject,
         body,
-        from_email=resolve_from_email(email),
+        from_email=sender,
     )
     print(f"workspace declined → fallback mode for {email}")
     return ok
