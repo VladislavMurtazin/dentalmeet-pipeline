@@ -594,8 +594,14 @@ def send_classified_response(
     first_name: str,
     *,
     original_subject: str = "",
+    from_email: str | None = None,
+    in_reply_to: str | None = None,
 ) -> bool:
-    """Send presentation + form with category-specific messaging (email-only)."""
+    """Send presentation + form with category-specific messaging (email-only).
+
+    Prefer ``from_email`` = the inbox that received the lead's reply so the
+    thread continues on the same sending account (no rotation).
+    """
     from .async_onboarding import brief_form_url, presentation_url
     from .email_sender import send_email
 
@@ -614,9 +620,25 @@ def send_classified_response(
         print(f"send_classified_response: missing template for {category!r}")
         return False
 
-    ok = send_email(email_addr, rendered["subject"], rendered["body"])
+    sender = (from_email or "").strip().lower() or None
+    extra: dict[str, str] = {}
+    mid = (in_reply_to or "").strip()
+    if mid:
+        if not mid.startswith("<"):
+            mid = f"<{mid}>"
+        extra["In-Reply-To"] = mid
+        extra["References"] = mid
+
+    ok = send_email(
+        email_addr,
+        rendered["subject"],
+        rendered["body"],
+        from_email=sender,
+        extra_headers=extra or None,
+    )
     if ok:
-        print(f"classified response ({category}) → {email_addr}")
+        via = f" via {sender}" if sender else ""
+        print(f"classified response ({category}) → {email_addr}{via}")
     return ok
 
 
@@ -644,6 +666,8 @@ def schedule_ooo_followup(
     first_name: str,
     company: str,
     days: int = 7,
+    *,
+    from_email: str | None = None,
 ) -> str:
     """Queue presentation send for N days later. Returns follow-up date ISO."""
     email_addr = (email_addr or "").strip().lower()
@@ -668,6 +692,7 @@ def schedule_ooo_followup(
             "company": company or "",
             "follow_up_date": follow_date,
             "created": datetime.now(timezone.utc).date().isoformat(),
+            "from_email": (from_email or "").strip().lower(),
             "sent": False,
         }
     )
@@ -706,6 +731,7 @@ def process_due_ooo_followups() -> list[str]:
             email_addr,
             item.get("first_name") or "",
             original_subject="following up",
+            from_email=(item.get("from_email") or "").strip().lower() or None,
         )
         if ok:
             item["sent"] = True
@@ -930,6 +956,8 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
                         addr,
                         first,
                         original_subject=orig,
+                        from_email=account_tag or None,
+                        in_reply_to=reply.get("message_id") or "",
                     ):
                         hit["notes"] = _append_note(
                             ws,
@@ -939,7 +967,11 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
                         )
                         responses_sent.append(addr)
                 follow_date = schedule_ooo_followup(
-                    addr, first, hit.get("company", ""), days=7
+                    addr,
+                    first,
+                    hit.get("company", ""),
+                    days=7,
+                    from_email=account_tag or None,
                 )
                 hit["notes"] = _append_note(
                     ws,
@@ -959,6 +991,8 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
                         addr,
                         first,
                         original_subject=orig,
+                        from_email=account_tag or None,
+                        in_reply_to=reply.get("message_id") or "",
                     ):
                         update_cell_safe(ws, row_index, MEETING_COL, "response_sent")
                         hit["notes"] = _append_note(
@@ -1009,7 +1043,9 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
                     drafted.append(addr)
 
             elif reply_type == "payment_question":
-                if send_payment_instructions(addr, first):
+                if send_payment_instructions(
+                    addr, first, from_email=account_tag or None
+                ):
                     hit["notes"] = _append_note(
                         ws,
                         row_index,
@@ -1029,13 +1065,15 @@ def match_replies_to_leads(replies: list[dict]) -> dict:
                         addr,
                         first,
                         original_subject=orig,
+                        from_email=account_tag or None,
+                        in_reply_to=reply.get("message_id") or "",
                     ):
                         update_cell_safe(ws, row_index, MEETING_COL, "response_sent")
                         hit["notes"] = _append_note(
                             ws,
                             row_index,
                             hit.get("notes") or "",
-                            f"response_sent other {today}",
+                            f"response_sent other {today} via:{account_tag}",
                         )
                         responses_sent.append(addr)
                 path = forward_to_manual_review(reply, hit)

@@ -301,6 +301,8 @@ def send_upfront_payment_instructions(
     lead_email: str,
     first_name: str,
     amount: int = 300,
+    *,
+    from_email: str | None = None,
 ) -> bool:
     """Send USDT TRC20 details for Repeat setup fee (or flat)."""
     email = (lead_email or "").strip()
@@ -330,10 +332,20 @@ def send_upfront_payment_instructions(
         f"\n"
         f"{SIGNATURE}"
     )
-    return send_email(email, subject, body)
+    return send_email(
+        email,
+        subject,
+        body,
+        from_email=(from_email or "").strip().lower() or None,
+    )
 
 
-def send_payment_instructions(lead_email: str, first_name: str) -> bool:
+def send_payment_instructions(
+    lead_email: str,
+    first_name: str,
+    *,
+    from_email: str | None = None,
+) -> bool:
     """
     Payment email based on client type.
     Pilot → remind post-pay model (no charge now).
@@ -345,6 +357,7 @@ def send_payment_instructions(lead_email: str, first_name: str) -> bool:
         return False
 
     name = (first_name or "").strip() or "there"
+    sender = (from_email or "").strip().lower() or None
     try:
         from delivery.client_tracker import get_client_payment_model
 
@@ -354,7 +367,9 @@ def send_payment_instructions(lead_email: str, first_name: str) -> bool:
 
     if (model.get("client_type") or "Pilot").lower() == "repeat":
         amt = int(model.get("upfront") or 300)
-        return send_upfront_payment_instructions(email, name, amount=amt)
+        return send_upfront_payment_instructions(
+            email, name, amount=amt, from_email=sender
+        )
 
     # Pilot: no upfront — explain post-payment
     subject = "payment model — pilot (pay after)"
@@ -371,4 +386,4 @@ def send_payment_instructions(lead_email: str, first_name: str) -> bool:
         f"\n"
         f"{SIGNATURE}"
     )
-    return send_email(email, subject, body)
+    return send_email(email, subject, body, from_email=sender)
