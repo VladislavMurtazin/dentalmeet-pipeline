@@ -135,6 +135,7 @@ def send_plan_b_confirmation(
     *,
     name: str = "",
     company: str = "",
+    from_email: str | None = None,
 ) -> bool:
     """Send Plan B setup confirmation to client."""
     from pipeline.email_sender import send_email
@@ -146,4 +147,12 @@ def send_plan_b_confirmation(
     subject, body = generate_plan_b_confirmation(
         {"agency_owner_name": name, "client_email": email, "company": company}
     )
-    return send_email(email, subject, body)
+    sender = (from_email or "").strip().lower() or None
+    if not sender:
+        try:
+            from pipeline.conversation_owner import resolve_from_email
+
+            sender = resolve_from_email(email)
+        except Exception:
+            sender = None
+    return send_email(email, subject, body, from_email=sender)

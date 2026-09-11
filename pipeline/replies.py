@@ -639,6 +639,13 @@ def send_classified_response(
     if ok:
         via = f" via {sender}" if sender else ""
         print(f"classified response ({category}) → {email_addr}{via}")
+        if sender:
+            try:
+                from .conversation_owner import set_conversation_owner
+
+                set_conversation_owner(email_addr, sender)
+            except Exception as e:
+                print(f"conversation_owner save skipped: {e}")
     return ok
 
 

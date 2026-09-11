@@ -299,7 +299,9 @@ def _ensure_processed_col(ws, headers: list[str]) -> int:
     return col - 1
 
 
-def _pilot_welcome_email(name: str, email: str, *, plan_b: bool = False) -> bool:
+def _pilot_welcome_email(
+    name: str, email: str, *, plan_b: bool = False, from_email: str | None = None
+) -> bool:
     first = (name or "").strip().split()[0] if (name or "").strip() else "there"
     subject = "welcome — pilot started (no upfront payment)"
     if plan_b:
@@ -331,10 +333,12 @@ def _pilot_welcome_email(name: str, email: str, *, plan_b: bool = False) -> bool
         f"\n"
         f"{SIGNATURE}"
     )
-    return send_email(email, subject, body)
+    return send_email(email, subject, body, from_email=from_email)
 
 
-def _repeat_welcome_email(name: str, email: str) -> bool:
+def _repeat_welcome_email(
+    name: str, email: str, *, from_email: str | None = None
+) -> bool:
     from .ai_reply_assistant import send_upfront_payment_instructions
 
     first = (name or "").strip().split()[0] if (name or "").strip() else "there"
@@ -353,12 +357,12 @@ def _repeat_welcome_email(name: str, email: str) -> bool:
         f"\n"
         f"{SIGNATURE}"
     )
-    ok = send_email(email, subject, body)
-    send_upfront_payment_instructions(email, first, amount=300)
+    ok = send_email(email, subject, body, from_email=from_email)
+    send_upfront_payment_instructions(email, first, amount=300, from_email=from_email)
     return ok
 
 
-def _continuation_email(name: str, email: str) -> bool:
+def _continuation_email(name: str, email: str, *, from_email: str | None = None) -> bool:
     first = (name or "").strip().split()[0] if (name or "").strip() else "there"
     subject = "got your update — continuing your active pilot"
     body = (
@@ -372,7 +376,7 @@ def _continuation_email(name: str, email: str) -> bool:
         f"\n"
         f"{SIGNATURE}"
     )
-    return send_email(email, subject, body)
+    return send_email(email, subject, body, from_email=from_email)
 
 
 def check_form_responses() -> dict:
@@ -455,7 +459,14 @@ def check_form_responses() -> dict:
         if not check["ok"]:
             print(f"row {i}: INVALID {email}: {check['errors']}")
             try:
-                send_form_fix_email(email, name, check["errors"])
+                from .conversation_owner import resolve_from_email
+
+                send_form_fix_email(
+                    email,
+                    name,
+                    check["errors"],
+                    from_email=resolve_from_email(email),
+                )
             except Exception as e:
                 print(f"row {i}: fix email failed: {e}")
             update_cell_safe(
@@ -477,14 +488,21 @@ def check_form_responses() -> dict:
             record = create_client_record(email, company, brief)
             update_cell_safe(form_ws, i, processed_idx + 1, "Processed")
 
+            from .conversation_owner import resolve_from_email, set_conversation_owner
+
+            owner = resolve_from_email(email)
+            if owner:
+                set_conversation_owner(email, owner)
+                print(f"row {i}: thread owner {owner}")
+
             if record.get("continuation"):
-                _continuation_email(name, email)
+                _continuation_email(name, email, from_email=owner)
                 label = "continuation"
             elif record.get("is_repeat"):
-                _repeat_welcome_email(name, email)
+                _repeat_welcome_email(name, email, from_email=owner)
                 label = "repeat + $300 upfront"
             else:
-                _pilot_welcome_email(name, email, plan_b=plan_b)
+                _pilot_welcome_email(name, email, plan_b=plan_b, from_email=owner)
                 label = "pilot $0 upfront"
 
             if plan_b and not record.get("continuation"):
@@ -492,7 +510,9 @@ def check_form_responses() -> dict:
                 from delivery.workspace_transparency import send_plan_b_confirmation
 
                 set_workspace_status(email, "fallback")
-                send_plan_b_confirmation(email, name=name, company=company)
+                send_plan_b_confirmation(
+                    email, name=name, company=company, from_email=owner
+                )
                 print(f"row {i}: Plan B selected — skipped OAuth, sent confirmation")
 
             stats["processed"] += 1
