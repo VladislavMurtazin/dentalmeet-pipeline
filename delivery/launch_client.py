@@ -53,7 +53,7 @@ def workspace_connected(client_email: str) -> bool:
 
 
 def use_fallback_mode(client_email: str) -> bool:
-    """Plan B: send from DentalMeet accounts on client's behalf."""
+    """Plan B: send from Google Workspace (@meet-agency.com) on client's behalf."""
     try:
         from .connect_workspace import get_workspace_status
 

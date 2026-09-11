@@ -113,6 +113,8 @@ python -m delivery.connect_workspace send_link client@agency.com --name John
 # After client connects + brief is in Clients:
 python -m delivery.research_dental build_list client@agency.com --limit 50
 python -m delivery.send_as_client run client@agency.com --limit 10
+# Plan B (no client Workspace): Google @meet-agency.com From rotation
+# python -m delivery.send_as_fallback run client@agency.com --limit 10
 
 # Payment flow (stages 4–10)
 python -m delivery.track_meetings fetch client@agency.com

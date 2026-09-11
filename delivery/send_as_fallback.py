@@ -1,15 +1,18 @@
-"""Plan B: send dental outreach from DentalMeet Zoho accounts on behalf of client.
+"""Plan B: send dental clinic outreach from Google Workspace (@meet-agency.com).
 
-Clinic sends rotate across cold SMTP inboxes (round-robin) so one account
-does not blast the whole daily batch. Reply-To matches From. Pin one inbox with
-FALLBACK_ROTATE=0 and FALLBACK_FROM_EMAIL=...
+Clinic sends rotate across Google SMTP inboxes (health-weighted) so one
+account does not blast the whole daily batch. Reply-To matches From.
+Pin one inbox with FALLBACK_ROTATE=0 and FALLBACK_FROM_EMAIL=outreach@meet-agency.com.
+
+Live sends require a Google SMTP password. Missing passwords log ERROR and
+do not fall back to Zoho. Agency cold first-touch stays on Zoho (pipeline
+campaign) and is not this path.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import json
 import math
 import os
 import sys
@@ -24,12 +27,8 @@ load_dotenv()
 ROOT = Path(__file__).resolve().parent.parent
 TARGETS_DIR = ROOT / "targets"
 LOGS_DIR = ROOT / "logs"
-ROTATION_PATH = ROOT / "data" / "fallback_smtp_rotation.json"
 
-FALLBACK_FROM = os.environ.get(
-    "FALLBACK_FROM_EMAIL", "hello@dentalmeet.agency"
-).strip()
-FALLBACK_POOL = os.environ.get("FALLBACK_FROM_POOL", "").strip()
+DEFAULT_FALLBACK_FROM = "outreach@meet-agency.com"
 
 
 def _rotate_enabled() -> bool:
@@ -38,6 +37,23 @@ def _rotate_enabled() -> bool:
         "false",
         "no",
         "off",
+    )
+
+
+def _fallback_from() -> str:
+    return os.environ.get("FALLBACK_FROM_EMAIL", DEFAULT_FALLBACK_FROM).strip()
+
+
+def _fallback_pool() -> list[str]:
+    raw = os.environ.get("FALLBACK_FROM_POOL", "").strip()
+    return [_norm(x) for x in raw.split(",") if _norm(x)]
+
+
+def _refuse_zoho(context: str) -> None:
+    print(
+        f"ERROR: {context} require a Google Workspace "
+        f"(@meet-agency.com) SMTP password (GOOGLE_SMTP_* / "
+        f"GOOGLE_SMTP_ACCOUNTS). Refusing Zoho fallback."
     )
 
 
@@ -58,65 +74,38 @@ def _sent_log_path(client_email: str) -> Path:
     return LOGS_DIR / f"{_safe(client_email)}_fallback_sent.csv"
 
 
-def _load_rotation_index(n: int) -> int:
-    if n <= 0:
-        return 0
-    try:
-        data = json.loads(ROTATION_PATH.read_text(encoding="utf-8"))
-        return int(data.get("next_index", 0)) % n
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        return 0
-
-
-def _save_rotation_index(index: int, n: int) -> None:
-    if n <= 0:
-        return
-    ROTATION_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ROTATION_PATH.write_text(
-        json.dumps({"next_index": int(index) % n}, indent=2) + "\n",
-        encoding="utf-8",
-    )
-
-
 def load_fallback_senders() -> list[str]:
-    """Ordered From addresses for Plan B clinic sends."""
+    """Google Workspace From addresses for Plan B clinic sends.
+
+    Live sends need SMTP passwords. DRY_RUN may list catalog Google
+    accounts without a password (same pattern as post-form).
+    """
+    from pipeline.conversation_owner import google_workspace_smtp_accounts
+
+    google = [_norm(e) for e, _ in google_workspace_smtp_accounts() if e]
+    fallback_from = _norm(_fallback_from())
+
     if not _rotate_enabled():
-        return [_norm(FALLBACK_FROM)] if FALLBACK_FROM else []
+        if fallback_from and fallback_from in google:
+            return [fallback_from]
+        _refuse_zoho("Plan B clinic sends")
+        return []
 
-    cold: list[str] = []
-    try:
-        from pipeline.email_sender import load_smtp_accounts
-
-        cold = [_norm(e) for e, _ in load_smtp_accounts(cold_only=True) if e]
-    except Exception as e:
-        print(f"Plan B: load_smtp_accounts skipped: {e}")
-
-    if not cold:
-        # Local/CI without passwords: still rotate over catalog emails.
-        try:
-            from pipeline.smtp_accounts import load_account_records
-
-            cold = [
-                _norm(a["email"])
-                for a in load_account_records(
-                    enabled_only=True, cold_only=True, with_password=False
-                )
-                if a.get("email")
-            ]
-        except Exception as e:
-            print(f"Plan B: load_account_records skipped: {e}")
-
-    if FALLBACK_POOL:
-        wanted = [_norm(x) for x in FALLBACK_POOL.split(",") if _norm(x)]
-        have = set(cold)
-        pooled = [e for e in wanted if e in have]
+    pool = _fallback_pool()
+    if pool:
+        have = set(google)
+        pooled = [e for e in pool if e in have]
         if pooled:
             return pooled
-        print("Plan B: FALLBACK_FROM_POOL unmatched — using all cold accounts")
+        print(
+            "Plan B: FALLBACK_FROM_POOL unmatched — using all Google Workspace accounts"
+        )
 
-    if cold:
-        return cold
-    return [_norm(FALLBACK_FROM)] if FALLBACK_FROM else []
+    if google:
+        return google
+
+    _refuse_zoho("Plan B clinic sends")
+    return []
 
 
 def pick_next_fallback_sender(
@@ -125,21 +114,44 @@ def pick_next_fallback_sender(
     per_run_counts: dict[str, int] | None = None,
     max_per_account: int | None = None,
 ) -> str | None:
-    """Round-robin across accounts; skip daily / per-run caps."""
-    from pipeline.send_throttle import is_account_available, remaining_capacity
+    """Health-weighted Google sender via select_next_account; skip caps."""
+    from pipeline.conversation_owner import (
+        google_workspace_smtp_accounts,
+        is_google_workspace_sender,
+    )
+    from pipeline.send_throttle import (
+        is_account_available,
+        remaining_capacity,
+        select_next_account,
+    )
 
-    pool = [a for a in accounts if a]
+    pool = [_norm(a) for a in accounts if a and is_google_workspace_sender(a)]
     if not pool:
         return None
 
-    n = len(pool)
-    start = _load_rotation_index(n)
     counts = per_run_counts if per_run_counts is not None else {}
+    eligible = {
+        a
+        for a in pool
+        if max_per_account is None or counts.get(a, 0) < max_per_account
+    }
+    if not eligible:
+        return None
 
-    for offset in range(n):
-        idx = (start + offset) % n
-        sender = pool[idx]
-        if max_per_account is not None and counts.get(sender, 0) >= max_per_account:
+    pairs = [
+        (e, p)
+        for e, p in google_workspace_smtp_accounts()
+        if _norm(e) in eligible
+    ]
+    if pairs:
+        picked = select_next_account(pairs)
+        if picked:
+            return _norm(picked[0])
+        return None
+
+    # DRY_RUN / tests may pass catalog Google emails without password pairs.
+    for sender in pool:
+        if sender not in eligible:
             continue
         try:
             if not is_account_available(sender):
@@ -149,9 +161,7 @@ def pick_next_fallback_sender(
                 continue
         except Exception as e:
             print(f"Plan B rotate capacity check {sender}: {e}")
-        _save_rotation_index(idx + 1, n)
         return sender
-
     return None
 
 
@@ -210,17 +220,24 @@ def send_as_fallback(
     *,
     from_email: str | None = None,
 ) -> bool:
-    """Send via Zoho; Reply-To matches From so replies land on that inbox."""
+    """Send via Google Workspace; Reply-To matches From so replies land there."""
+    from pipeline.conversation_owner import is_google_workspace_sender
     from pipeline.email_sender import send_email
 
     to = (target.get("email") or "").strip()
     sender = _norm(from_email)
     if not sender:
-        sender = pick_next_fallback_sender(load_fallback_senders()) or _norm(
-            FALLBACK_FROM
+        sender = pick_next_fallback_sender(load_fallback_senders()) or ""
+    if sender and not is_google_workspace_sender(sender):
+        print(
+            f"send_as_fallback: ERROR refusing non-Google From {sender} for {to}"
         )
+        return False
     if not sender:
-        print(f"send_as_fallback: no sender for {to}")
+        print(
+            f"send_as_fallback: ERROR no Google Workspace SMTP "
+            f"password — Refusing Zoho fallback for {to}"
+        )
         return False
     if os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes"):
         print(f"DRY_RUN fallback {sender} → {to}: {subject}")
@@ -289,12 +306,15 @@ def run_campaign(client_email: str, daily_limit: int = 25) -> dict:
 
     accounts = load_fallback_senders()
     if not accounts:
-        raise RuntimeError("No Plan B SMTP accounts available")
+        raise RuntimeError(
+            "No Google Workspace SMTP accounts for Plan B clinic sends "
+            "(set GOOGLE_SMTP_* / GOOGLE_SMTP_ACCOUNTS). Refusing Zoho fallback."
+        )
 
     max_per_account = max(1, math.ceil(limit / len(accounts)))
     per_run: dict[str, int] = {a: 0 for a in accounts}
     print(
-        f"Plan B rotation: {len(accounts)} accounts {accounts}; "
+        f"Plan B Google rotation: {len(accounts)} accounts {accounts}; "
         f"limit={limit}, max_per_account={max_per_account}"
     )
 
@@ -378,7 +398,9 @@ def run_campaign(client_email: str, daily_limit: int = 25) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Plan B outreach (Zoho fallback)")
+    parser = argparse.ArgumentParser(
+        description="Plan B clinic outreach (Google Workspace)"
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("run", help="Run fallback campaign for client")
     p.add_argument("client_email")
