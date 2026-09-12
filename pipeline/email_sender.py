@@ -274,10 +274,11 @@ def send_email(
     skip_throttle: bool = False,
     extra_headers: dict[str, str] | None = None,
 ) -> bool:
-    """Send via Zoho SMTP with health-weighted rotation; retry next account on failure.
+    """Send via SMTP with health-weighted rotation; retry next account on failure.
 
     If ``from_email`` is set, send only from that account (no rotation failover).
     ``skip_throttle`` bypasses daily limits (warmup / alerts).
+    Agency/cold rotation prefers Google Workspace when PREFER_GOOGLE_SENDERS=1.
     """
     to = (to or "").strip()
     subject = subject or ""
@@ -286,12 +287,15 @@ def send_email(
 
     # Keep the whole client thread on the inbox that started it.
     # After the onboarding form, a Google owner must win over Zoho.
+    # With PREFER_GOOGLE_SENDERS, ignore a leftover Zoho owner so new
+    # first-touch / re-engage can rotate on @meet-agency.com.
     if not skip_throttle:
         try:
             from .conversation_owner import (
                 get_conversation_owner,
                 is_google_workspace_sender,
             )
+            from .smtp_accounts import prefer_google_senders
 
             owner = get_conversation_owner(to)
             if owner and is_google_workspace_sender(owner):
@@ -302,6 +306,11 @@ def send_email(
                     )
                 from_email = owner
                 print(f"send_email: thread owner {from_email} → {to}")
+            elif owner and prefer_google_senders() and not from_email:
+                print(
+                    f"send_email: ignoring non-Google owner {owner} "
+                    f"(PREFER_GOOGLE_SENDERS) → {to}"
+                )
             elif not from_email and owner:
                 from_email = owner
                 print(f"send_email: thread owner {from_email} → {to}")
@@ -357,6 +366,8 @@ def send_email(
         except Exception as e:
             print(f"validation check error (continuing): {e}")
 
+    from .smtp_accounts import prefer_google_senders
+
     accounts = load_smtp_accounts(cold_only=True)
     if from_email or skip_throttle:
         from .smtp_accounts import load_warmup_smtp_accounts
@@ -370,6 +381,19 @@ def send_email(
         for e, p in load_smtp_accounts(cold_only=False):
             by.setdefault(e.lower(), (e, p))
         accounts = list(by.values())
+    elif prefer_google_senders():
+        from .conversation_owner import google_workspace_smtp_accounts
+
+        google_accts = google_workspace_smtp_accounts()
+        if not google_accts:
+            print(
+                "ERROR: PREFER_GOOGLE_SENDERS=1 requires a Google Workspace "
+                "(@meet-agency.com) SMTP password (GOOGLE_SMTP_* / "
+                "GOOGLE_SMTP_ACCOUNTS). Refusing Zoho fallback."
+            )
+            return False
+        accounts = google_accts
+        print("cold send: preferring Google Workspace @meet-agency.com")
     elif accounts:
         from .smtp_accounts import filter_cold_accounts_for_send
 
@@ -377,8 +401,8 @@ def send_email(
 
     if not accounts:
         print(
-            "send_email error: set SMTP_ACCOUNTS + SMTP_APP_PASSWORDS "
-            "(and optionally GOOGLE_SMTP_ACCOUNTS + GOOGLE_SMTP_APP_PASSWORDS)"
+            "send_email error: set GOOGLE_SMTP_ACCOUNTS + GOOGLE_SMTP_* "
+            "(or SMTP_ACCOUNTS + SMTP_APP_PASSWORDS if PREFER_GOOGLE_SENDERS=0)"
         )
         return False
 
@@ -486,8 +510,9 @@ def send_email(
             skip_unsubscribe=skip_unsubscribe,
             extra_headers=extra_headers,
         )
+        host, port, provider = smtp_endpoint(email)
         print("=== DRY_RUN email ===")
-        print(f"Transport: Zoho SMTP_SSL {SMTP_SERVER}:{SMTP_PORT}")
+        print(f"Transport: {provider} SMTP_SSL {host}:{port}")
         print(f"From (weighted #{idx + 1}/{len(accounts)}): {email}")
         print(f"To: {to}")
         print(f"Subject: {subject}")
@@ -555,7 +580,9 @@ def send_email(
                 f"— trying next"
             )
 
-    print(f"send_email error to {to}: all {attempts} Zoho attempts failed; last={last_err}")
+    print(
+        f"send_email error to {to}: all {attempts} SMTP attempts failed; last={last_err}"
+    )
     return False
 
 
@@ -642,7 +669,12 @@ def send_batch(
         os.environ["SKIP_EMAIL_VALIDATION"] = "1"
         ok = False
         try:
-            ok = send_email(to, subject, body)
+            ok = send_email(
+                to,
+                subject,
+                body,
+                from_email=item.get("from_email") or None,
+            )
         except Exception as e:
             print(f"send_batch unexpected error for {to}: {e}")
             ok = False

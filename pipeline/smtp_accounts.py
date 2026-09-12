@@ -351,6 +351,21 @@ def domain_of(email: str) -> str:
     return (email or "").split("@")[-1].lower() if "@" in (email or "") else ""
 
 
+def prefer_google_senders() -> bool:
+    """Agency/cold first-touch prefers Google Workspace @meet-agency.com.
+
+    Default on (PREFER_GOOGLE_SENDERS=1). Zoho catalog entries stay in
+    accounts.json for warmup / replies / existing threads; new rotation
+    must not silently fall back to Zoho when this flag is on.
+    """
+    return os.environ.get("PREFER_GOOGLE_SENDERS", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
 def prefer_backup_for_cold() -> bool:
     """True when primary-domain cold accounts look unhealthy."""
     from .send_throttle import calculate_health_score, get_account_metrics
