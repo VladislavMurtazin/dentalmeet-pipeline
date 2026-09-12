@@ -156,10 +156,14 @@ python -m pipeline.main research --dry-run          # print leads+signals JSON o
 python -m pipeline.main research --from-csv         # ignore APOLLO_KEY
 python -m pipeline.main research --page 2
 
-# First-touch send (unsent, Verified=yes|manual) — Gmail API / HTTPS
+# First-touch send (unsent + 60-day-silent re-engage, Verified=yes|manual)
 python -m pipeline.main send
 python -m pipeline.main send --limit 5
 python -m pipeline.main send --limit 10
+
+# 2-month re-engage preview (Agencies: Sent ≥60 days, Replied empty)
+python -m pipeline.main reengage            # list only
+python -m pipeline.main reengage --apply    # optional: clear Sent + Notes marker
 
 # Follow-ups
 python -m pipeline.main followup 1   # Sent 3+ days ago, no reply, no FU1 yet
@@ -184,7 +188,7 @@ In `.env`:
 DRY_RUN=true
 ```
 
-Then `send` / `followup` print emails to the console and **do not** call the Gmail API or mark `Sent` / Notes.  
+Then `send` / `followup` / `reengage --apply` print emails or proposed sheet writes and **do not** call SMTP or mark `Sent` / Notes.  
 Unset or set `DRY_RUN=false` for real sends.
 
 ```bash
@@ -209,7 +213,8 @@ Workflow: `.github/workflows/pipeline.yml`
 | Job | Cron (UTC) | Command |
 |-----|------------|---------|
 | `research` | `0 8 * * *` daily | `python -m pipeline.main research` |
-| `send` | `0 14 * * 1-5` weekdays | `python -m pipeline.main send --limit 5` |
+| `send` | `0 14 * * 1-5` weekdays (cron currently commented) | `python -m pipeline.main send --limit 5` — includes 60-day re-engage |
+| `reengage` | research job (daily 08:00, list-only) + workflow_dispatch | `python -m pipeline.main reengage` |
 | `followup1` | `0 15 * * 1-5` weekdays | `python -m pipeline.main followup 1` |
 | `followup2` | `0 16 * * 1-5` weekdays | `python -m pipeline.main followup 2` |
 | `replies` | `0 */6 * * *` every 6h | `python -m pipeline.main replies` |
@@ -236,7 +241,7 @@ Keep secrets out of git. Prefer GitHub Secrets over committing `.env` / `gmail_t
 | Apollo `403` / `API_INACCESSIBLE` on `bulk_match` | Create a Master API key (or enable people enrichment scopes). |
 | Apollo search OK but no emails | Enrichment scopes missing, or use CSV export → `data/leads.csv`. |
 | Rows shifted across columns | Run `python -m pipeline.normalize_sheet` once; `to_sheets` now writes `A{n}:L{n}` only. |
-| `send` / followup: nothing to send | Check `Sent` empty, `Verified` is `yes` or `manual`, valid Email. For FU2, Notes must contain `FU1 sent`. |
+| `send` / followup: nothing to send | Check `Sent` empty **or** Sent ≥60 days with Replied empty, `Verified` is `yes` or `manual`, valid Email. For FU2, Notes must contain `FU1 sent`. |
 | Replies: 0 candidates | No matching `In-Reply-To` / `Re: meetings with dental practices…` in the lookback window. |
 
 ## 6. Notes

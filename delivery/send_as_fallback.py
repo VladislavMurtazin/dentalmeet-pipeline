@@ -5,8 +5,8 @@ account does not blast the whole daily batch. Reply-To matches From.
 Pin one inbox with FALLBACK_ROTATE=0 and FALLBACK_FROM_EMAIL=outreach@meet-agency.com.
 
 Live sends require a Google SMTP password. Missing passwords log ERROR and
-do not fall back to Zoho. Agency cold first-touch stays on Zoho (pipeline
-campaign) and is not this path.
+do not fall back to Zoho. Agency cold first-touch (pipeline campaign) also
+prefers Google when PREFER_GOOGLE_SENDERS=1; this module is Plan B clinics.
 """
 
 from __future__ import annotations

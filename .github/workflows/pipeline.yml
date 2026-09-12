@@ -32,6 +32,7 @@ on:
         options:
           - research
           - send
+          - reengage
           - followup1
           - followup2
           - replies
@@ -74,6 +75,7 @@ env:
   GOOGLE_SMTP_2: ${{ secrets.GOOGLE_SMTP_2 }}
   GOOGLE_SMTP_3: ${{ secrets.GOOGLE_SMTP_3 }}
   GOOGLE_SMTP_VLADISLAV_PASSWORD: ${{ secrets.GOOGLE_SMTP_VLADISLAV_PASSWORD }}
+  PREFER_GOOGLE_SENDERS: "1"
   ZEROBOUNCE_API_KEY: ${{ secrets.ZEROBOUNCE_API_KEY }}
   PRESENTATION_URL: ${{ secrets.PRESENTATION_URL }}
   BRIEF_FORM_URL: ${{ secrets.BRIEF_FORM_URL }}
@@ -133,6 +135,47 @@ jobs:
           SHEET_NAME: ${{ secrets.SHEET_NAME }}
           WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
 
+      - name: Scan 2-month-silent Agencies leads (no sheet writes)
+        run: |
+          set -euo pipefail
+          python -m pipeline.main reengage
+        env:
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
+          DRY_RUN: "true"
+
+  reengage:
+    name: reengage
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.job == 'reengage' || github.event.inputs.job == 'all')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: List 2-month-silent Agencies leads
+        run: |
+          set -euo pipefail
+          python -m pipeline.main reengage
+        env:
+          GOOGLE_SERVICE_ACCOUNT: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
+          DRY_RUN: "true"
+
   send:
     name: send
     if: >
@@ -155,19 +198,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Validate Zoho SMTP secrets
+      - name: Validate Google SMTP secrets (agency send)
         run: |
           set -euo pipefail
           missing=0
-          for name in GOOGLE_SERVICE_ACCOUNT SHEET_NAME WORKSHEET_NAME SMTP_ACCOUNTS SMTP_APP_PASSWORDS; do
+          for name in GOOGLE_SERVICE_ACCOUNT SHEET_NAME WORKSHEET_NAME; do
             if [ -z "${!name}" ]; then
               echo "::error::Missing required secret/env: $name"
               missing=1
             fi
           done
+          if [ -z "${GOOGLE_SMTP_1:-}" ] && [ -z "${GOOGLE_SMTP_VLADISLAV_PASSWORD:-}" ] && [ -z "${GOOGLE_SMTP_APP_PASSWORDS:-}" ]; then
+            echo "::error::PREFER_GOOGLE_SENDERS requires a Google Workspace SMTP password (GOOGLE_SMTP_1 / GOOGLE_SMTP_VLADISLAV_PASSWORD / GOOGLE_SMTP_APP_PASSWORDS)"
+            missing=1
+          fi
           exit "$missing"
 
-      - name: Send first-touch emails (limit 5)
+      - name: Send first-touch emails (limit 5; includes 60-day re-engage)
         run: |
           set -euo pipefail
           python -m pipeline.main send --limit 5
@@ -180,6 +227,13 @@ jobs:
           WORKSHEET_NAME: ${{ secrets.WORKSHEET_NAME }}
           SMTP_ACCOUNTS: ${{ secrets.SMTP_ACCOUNTS }}
           SMTP_APP_PASSWORDS: ${{ secrets.SMTP_APP_PASSWORDS }}
+          GOOGLE_SMTP_ACCOUNTS: ${{ secrets.GOOGLE_SMTP_ACCOUNTS }}
+          GOOGLE_SMTP_APP_PASSWORDS: ${{ secrets.GOOGLE_SMTP_APP_PASSWORDS }}
+          GOOGLE_SMTP_1: ${{ secrets.GOOGLE_SMTP_1 }}
+          GOOGLE_SMTP_2: ${{ secrets.GOOGLE_SMTP_2 }}
+          GOOGLE_SMTP_3: ${{ secrets.GOOGLE_SMTP_3 }}
+          GOOGLE_SMTP_VLADISLAV_PASSWORD: ${{ secrets.GOOGLE_SMTP_VLADISLAV_PASSWORD }}
+          PREFER_GOOGLE_SENDERS: "1"
           GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
           CALENDLY_URL: ${{ secrets.CALENDLY_URL }}
           PRESENTATION_URL: ${{ secrets.PRESENTATION_URL }}

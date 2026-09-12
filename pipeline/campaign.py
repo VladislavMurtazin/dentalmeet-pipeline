@@ -36,12 +36,24 @@ def _first_name(contact: str) -> str:
 
 
 def get_unsent_leads() -> list[dict]:
-    """Leads with valid email, empty Sent, Verified in {yes, manual}."""
+    """Leads ready for first-touch: empty Sent, or 2-month-silent re-engage.
+
+    Fresh unsent rows come first so the daily cap is not consumed only by
+    stale re-engages. Re-engage rows keep ``Sent`` until a successful send
+    (history is then copied into Notes — see ``pipeline.reengage``).
+    """
     from .bounce_handler import check_recipient_sendable
+    from .reengage import is_reengage_eligible
 
     ws = get_worksheet_safe("Agencies")
     values = get_all_values_safe(ws)
-    leads: list[dict] = []
+    fresh: list[dict] = []
+    stale: list[dict] = []
+
+    try:
+        from .ai_reply_assistant import is_suppressed
+    except Exception:
+        is_suppressed = None
 
     for i, raw in enumerate(values):
         if i == 0:
@@ -60,14 +72,33 @@ def get_unsent_leads() -> list[dict]:
         if not sendable:
             print(skip_reason)
             continue
+        if is_suppressed is not None:
+            try:
+                if is_suppressed(email):
+                    print(f"Skipped {email} (suppressed / do-not-contact)")
+                    continue
+            except Exception:
+                pass
+
+        reengage = False
         if sent:
-            continue
-        if verified not in ("yes", "manual"):
+            if not is_reengage_eligible(fields):
+                continue
+            reengage = True
+        elif verified not in ("yes", "manual"):
             continue
 
-        leads.append({"row_index": row_index, **fields})
+        entry = {
+            "row_index": row_index,
+            "reengage": reengage,
+            "sent_was": sent if reengage else "",
+            **fields,
+        }
+        (stale if reengage else fresh).append(entry)
 
-    return leads
+    if stale:
+        print(f"reengage eligible on send list: {len(stale)}")
+    return fresh + stale
 
 
 def mark_sent(row_index: int, date_str: str) -> None:
@@ -164,6 +195,8 @@ def run_first_touch(limit: int = 5) -> dict:
                 "template_id": template_id,
                 "template_selection_log": selection_log,
                 "lead": lead,
+                "reengage": bool(lead.get("reengage")),
+                "sent_was": lead.get("sent_was") or "",
             }
         )
 
@@ -196,18 +229,30 @@ def run_first_touch(limit: int = 5) -> dict:
 
     if _dry_run():
         print(f"DRY_RUN: not marking Sent ({len(result['sent'])} would be marked {today})")
+        reengaged = sum(1 for item in result["sent"] if item.get("reengage"))
+        if reengaged:
+            print(f"DRY_RUN: {reengaged} re-engage send(s) would get Notes sent_was/reengage_reset")
     else:
+        from .reengage import append_reengage_notes
+
         for item in result["sent"]:
             row_index = item.get("row_index")
             if row_index:
                 try:
+                    notes = item.get("Notes", "")
+                    if item.get("reengage"):
+                        notes = append_reengage_notes(
+                            notes, item.get("sent_was") or "", date.today()
+                        )
+                        ws = get_worksheet_safe("Agencies")
+                        update_cell_safe(ws, row_index, COL["Notes"], notes)
+                        item["Notes"] = notes
                     mark_sent(row_index, today)
                     tpl = item.get("template_id")
                     if tpl:
-                        _append_template_note(
-                            row_index, item.get("Notes", ""), tpl
-                        )
-                    print(f"marked Sent={today} row {row_index} ({tpl or 'no tpl'})")
+                        _append_template_note(row_index, notes, tpl)
+                    kind = "reengage" if item.get("reengage") else "first-touch"
+                    print(f"marked Sent={today} row {row_index} ({kind}, {tpl or 'no tpl'})")
                 except Exception as e:
                     print(f"mark_sent failed row {row_index}: {e}")
 

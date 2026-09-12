@@ -4,6 +4,8 @@
   python -m pipeline.main research
   python -m pipeline.main send
   python -m pipeline.main send --limit 10
+  python -m pipeline.main reengage
+  python -m pipeline.main reengage --apply
   python -m pipeline.main followup 1
   python -m pipeline.main followup 2
   python -m pipeline.main replies
@@ -159,7 +161,13 @@ def run_research(args: argparse.Namespace) -> None:
 
 def run_send(args: argparse.Namespace) -> None:
     from .campaign import run_first_touch
+    from .reengage import run_reengage as _list_reengage
 
+    # Log 2-month-silent candidates (no sheet writes). send includes them.
+    try:
+        _list_reengage(apply=False)
+    except Exception as e:
+        print(f"reengage scan skipped: {e}")
     run_first_touch(limit=args.limit)
 
 
@@ -167,6 +175,12 @@ def run_followup(args: argparse.Namespace) -> None:
     from .followup import run_followups
 
     run_followups(followup_number=args.wave)
+
+
+def run_reengage(args: argparse.Namespace) -> None:
+    from .reengage import run_reengage as _run
+
+    _run(apply=bool(getattr(args, "apply", False)), limit=getattr(args, "limit", None))
 
 
 def run_replies(args: argparse.Namespace) -> None:
@@ -550,6 +564,22 @@ def main() -> None:
         help="Max emails this run (default 5, hard cap 12)",
     )
 
+    p_reengage = sub.add_parser(
+        "reengage",
+        help="List Agencies leads silent 60+ days (no reply) for another first-touch",
+    )
+    p_reengage.add_argument(
+        "--apply",
+        action="store_true",
+        help="Clear Sent and write sent_was/reengage_reset in Notes (DRY_RUN skips writes)",
+    )
+    p_reengage.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Max eligible leads to list/reset this run",
+    )
+
     p_fu = sub.add_parser("followup", help="Send follow-up wave 1 or 2")
     p_fu.add_argument(
         "wave",
@@ -770,6 +800,10 @@ def main() -> None:
 
     if args.command == "followup":
         run_monitored(f"followup_{args.wave}", run_followup, args)
+        return
+
+    if args.command == "reengage":
+        run_monitored("reengage", run_reengage, args)
         return
 
     if args.command == "replies":

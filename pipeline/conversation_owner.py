@@ -1,8 +1,10 @@
 """Remember which SMTP account owns a lead conversation end-to-end.
 
-Cold first-touch stays on Zoho rotation. After the onboarding form,
-client-facing mail must stay on Google Workspace (@meet-agency.com)
-so replies are visible (Zoho IMAP is disabled).
+Agency cold first-touch prefers Google Workspace (@meet-agency.com)
+when PREFER_GOOGLE_SENDERS=1 (default). After the onboarding form,
+client-facing mail must stay on Google Workspace so replies are
+visible (Zoho IMAP is disabled). Zoho catalog entries remain for
+warmup and existing threads.
 """
 
 from __future__ import annotations
