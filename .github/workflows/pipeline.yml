@@ -4,9 +4,9 @@ on:
   schedule:
     - cron: "0 2 * * *"      # backup — daily 02:00 UTC
     - cron: "0 8 * * *"      # research — daily 08:00 UTC
-#    - cron: "0 14 * * 1-5"   # send — weekdays 14:00 UTC
-#    - cron: "0 15 * * 1-5"   # followup1 — weekdays 15:00 UTC
-#    - cron: "0 16 * * 1-5"   # followup2 — weekdays 16:00 UTC
+    - cron: "0 14 * * 1-5"   # send — weekdays 14:00 UTC
+    - cron: "0 15 * * 1-5"   # followup1 — weekdays 15:00 UTC
+    - cron: "0 16 * * 1-5"   # followup2 — weekdays 16:00 UTC
     - cron: "0 */6 * * *"    # replies — every 6 hours
     - cron: "0 */2 * * *"    # check_forms — every 2 hours
     - cron: "30 */2 * * *"   # launch_pending — every 2 hours (:30)
