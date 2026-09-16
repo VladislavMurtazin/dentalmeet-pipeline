@@ -2,26 +2,22 @@ name: lead-pipeline
 
 on:
   schedule:
-    - cron: "0 2 * * *"      # backup — daily 02:00 UTC
-    - cron: "0 8 * * *"      # research — daily 08:00 UTC
-    - cron: "0 14 * * 1-5"   # send — weekdays 14:00 UTC
-    - cron: "0 15 * * 1-5"   # followup1 — weekdays 15:00 UTC
-    - cron: "0 16 * * 1-5"   # followup2 — weekdays 16:00 UTC
-    - cron: "0 */6 * * *"    # replies — every 6 hours
-    - cron: "0 */2 * * *"    # check_forms — every 2 hours
-    - cron: "30 */2 * * *"   # launch_pending — every 2 hours (:30)
-    - cron: "0 9 * * 1"      # client weekly reports — Monday 09:00 UTC
-    - cron: "30 9 * * 1"     # bounce_cleanup — Monday 09:30 UTC
-    - cron: "45 9 * * 1"     # case studies weekly — Monday 09:45 UTC
-    - cron: "15 9 * * *"     # pilot invoices — daily 09:15 UTC (3 weeks after start)
-    - cron: "0 10 * * *"     # payment reminders — daily 10:00 UTC
-    - cron: "5 * * * *"      # payment poll — hourly :05 (USDT check)
-    - cron: "0 */4 * * *"    # warmup_send — every 4 hours
-    - cron: "0 2-23/4 * * *" # warmup_process — 02,06,10,14,18,22 UTC
-    - cron: "0 6 * * *"      # deliverability — daily 06:00 UTC
-    - cron: "0 3 * * 0"      # blacklist check — Sunday 03:00 UTC
-    - cron: "0 20 * * *"     # daily_summary — 20:00 UTC
-    - cron: "0 * * * *"      # calendar_sync + crm export — hourly
+    # Free plan budget: ~2000 min/mo after billing reset (~29 Sep).
+    # ~280 runs/mo × ~5–6 min ≈ 1400–1700 min (buffer left).
+    - cron: "0 8 * * 1,4"    # research — Mon+Thu
+    - cron: "0 14 * * 1-5"   # send — weekdays
+    - cron: "0 15 * * 1-5"   # followup1 — weekdays
+    - cron: "0 16 * * 1-5"   # followup2 — weekdays
+    - cron: "0 9,21 * * *"   # replies — 2×/day (leads)
+    - cron: "0 10 * * *"     # check_forms — 1×/day
+    - cron: "30 10 * * *"    # launch_pending — 1×/day
+    - cron: "0 11 * * *"     # payment_check — 1×/day
+    - cron: "0 7 * * *"      # warmup_send — 1×/day
+    - cron: "30 7 * * *"     # warmup_process — 1×/day
+    - cron: "30 9 * * 1"     # bounce_cleanup — Monday
+    - cron: "0 2 * * 0"      # backup — Sunday
+    # OFF (manual only): deliverability, blacklist, daily_summary,
+    # weekly_report, case_studies, pilot_invoices, calendar_sync, crm, analytics
   workflow_dispatch:
     inputs:
       job:
@@ -92,7 +88,7 @@ jobs:
   research:
     name: research
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 8 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 8 * * 1,4') ||
       (github.event_name == 'workflow_dispatch' &&
         (github.event.inputs.job == 'research' || github.event.inputs.job == 'all'))
     runs-on: ubuntu-latest
@@ -348,7 +344,7 @@ jobs:
   replies:
     name: replies
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 */6 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 9,21 * * *') ||
       (github.event_name == 'workflow_dispatch' &&
         (github.event.inputs.job == 'replies' || github.event.inputs.job == 'all'))
     runs-on: ubuntu-latest
@@ -444,7 +440,7 @@ jobs:
   check_forms:
     name: check_forms
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 */2 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 10 * * *') ||
       (github.event_name == 'workflow_dispatch' &&
         (github.event.inputs.job == 'check_forms' || github.event.inputs.job == 'all'))
     runs-on: ubuntu-latest
@@ -536,7 +532,7 @@ jobs:
   launch_pending:
     name: launch_pending
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '30 */2 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '30 10 * * *') ||
       (github.event_name == 'workflow_dispatch' &&
         (github.event.inputs.job == 'launch_pending' || github.event.inputs.job == 'all'))
     runs-on: ubuntu-latest
@@ -612,9 +608,8 @@ jobs:
   weekly_report:
     name: weekly_report
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 9 * * 1') ||
-      (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.job == 'weekly_report' || github.event.inputs.job == 'all'))
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.job == 'weekly_report' || github.event.inputs.job == 'all')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -670,9 +665,8 @@ jobs:
   pilot_invoices:
     name: pilot_invoices
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '15 9 * * *') ||
-      (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.job == 'pilot_invoices' || github.event.inputs.job == 'all'))
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.job == 'pilot_invoices' || github.event.inputs.job == 'all')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -734,8 +728,7 @@ jobs:
     name: payment_check
     if: >
       (github.event_name == 'schedule' && (
-        github.event.schedule == '0 10 * * *' ||
-        github.event.schedule == '5 * * * *'
+        github.event.schedule == '0 11 * * *'
       )) ||
       (github.event_name == 'workflow_dispatch' &&
         (github.event.inputs.job == 'payment_check' || github.event.inputs.job == 'all'))
@@ -819,7 +812,7 @@ jobs:
   warmup_send:
     name: warmup_send
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 */4 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 7 * * *') ||
       (github.event_name == 'workflow_dispatch' &&
         (github.event.inputs.job == 'warmup_send' || github.event.inputs.job == 'all'))
     runs-on: ubuntu-latest
@@ -930,7 +923,7 @@ jobs:
   warmup_process:
     name: warmup_process
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 2-23/4 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '30 7 * * *') ||
       (github.event_name == 'workflow_dispatch' &&
         (github.event.inputs.job == 'warmup_process' || github.event.inputs.job == 'all'))
     runs-on: ubuntu-latest
@@ -1041,9 +1034,8 @@ jobs:
   blacklist_check:
     name: blacklist_check
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 3 * * 0') ||
-      (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.job == 'blacklist_check' || github.event.inputs.job == 'all'))
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.job == 'blacklist_check' || github.event.inputs.job == 'all')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -1096,9 +1088,8 @@ jobs:
   deliverability:
     name: deliverability
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 6 * * *') ||
-      (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.job == 'deliverability' || github.event.inputs.job == 'all'))
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.job == 'deliverability' || github.event.inputs.job == 'all')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -1183,9 +1174,8 @@ jobs:
   daily_summary:
     name: daily_summary
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 20 * * *') ||
-      (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.job == 'daily_summary' || github.event.inputs.job == 'all'))
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.job == 'daily_summary' || github.event.inputs.job == 'all')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -1232,7 +1222,7 @@ jobs:
   backup:
     name: backup
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 2 * * *') ||
+      (github.event_name == 'schedule' && github.event.schedule == '0 2 * * 0') ||
       (github.event_name == 'workflow_dispatch' &&
         (github.event.inputs.job == 'backup' || github.event.inputs.job == 'all'))
     runs-on: ubuntu-latest
@@ -1297,9 +1287,8 @@ jobs:
   analytics:
     name: analytics
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 21 * * *') ||
-      (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.job == 'analytics' || github.event.inputs.job == 'all'))
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.job == 'analytics' || github.event.inputs.job == 'all')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -1427,9 +1416,8 @@ jobs:
   calendar_sync:
     name: calendar_sync
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 * * * *') ||
-      (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.job == 'calendar_sync' || github.event.inputs.job == 'all'))
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.job == 'calendar_sync' || github.event.inputs.job == 'all')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -1485,9 +1473,8 @@ jobs:
   crm:
     name: crm
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '0 * * * *') ||
-      (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.job == 'crm' || github.event.inputs.job == 'all'))
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.job == 'crm' || github.event.inputs.job == 'all')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -1558,9 +1545,8 @@ jobs:
   case_studies:
     name: case_studies
     if: >
-      (github.event_name == 'schedule' && github.event.schedule == '45 9 * * 1') ||
-      (github.event_name == 'workflow_dispatch' &&
-        (github.event.inputs.job == 'case_studies' || github.event.inputs.job == 'all'))
+      github.event_name == 'workflow_dispatch' &&
+      (github.event.inputs.job == 'case_studies' || github.event.inputs.job == 'all')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
