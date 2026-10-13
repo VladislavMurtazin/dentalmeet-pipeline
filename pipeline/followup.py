@@ -29,8 +29,13 @@ def _dry_run() -> bool:
     return os.environ.get("DRY_RUN", "").strip().lower() in ("1", "true", "yes")
 
 
-def _pad(row: list[str], n: int = 12) -> list[str]:
-    return (list(row) + [""] * n)[:n]
+def _pad(row: list[str], n: int | None = None) -> list[str]:
+    """Pad or truncate to the Agencies header width (same shape as to_sheets._pad_row)."""
+    width = len(HEADERS) if n is None else n
+    padded = [(c if c is not None else "") for c in row[:width]]
+    while len(padded) < width:
+        padded.append("")
+    return padded
 
 
 def _first_name(contact: str) -> str:
@@ -76,40 +81,44 @@ def get_followup_candidates(days_since_sent: int, followup_number: int) -> list[
         if i == 0:
             continue
         row_index = i + 1
-        cells = _pad(raw)
-        fields = {name: cells[j] for j, name in enumerate(HEADERS)}
+        try:
+            cells = _pad(raw)
+            fields = {name: cells[j] for j, name in enumerate(HEADERS)}
 
-        email = fields["Email"].strip()
-        if not is_email(email):
-            continue
-        if fields["Replied"].strip():
-            continue
+            email = fields["Email"].strip()
+            if not is_email(email):
+                continue
+            if fields["Replied"].strip():
+                continue
 
-        sent_on = _parse_sent_date(fields["Sent"])
-        if sent_on is None:
-            continue
-        # Sent N+ days ago ⇒ sent_on <= cutoff
-        if sent_on > cutoff:
-            continue
+            sent_on = _parse_sent_date(fields["Sent"])
+            if sent_on is None:
+                continue
+            # Sent N+ days ago ⇒ sent_on <= cutoff
+            if sent_on > cutoff:
+                continue
 
-        notes = fields["Notes"]
-        # Don't re-send the same follow-up wave
-        if _fu_already_sent(notes, followup_number):
-            continue
-        # FU2 requires FU1 already logged (and no reply — checked above)
-        if followup_number == 2 and not _fu_already_sent(notes, 1):
-            continue
+            notes = fields["Notes"]
+            # Don't re-send the same follow-up wave
+            if _fu_already_sent(notes, followup_number):
+                continue
+            # FU2 requires FU1 already logged (and no reply — checked above)
+            if followup_number == 2 and not _fu_already_sent(notes, 1):
+                continue
 
-        candidates.append(
-            {
-                "row_index": row_index,
-                "Email": email,
-                "Contact": fields["Contact"].strip(),
-                "Company": fields["Company"].strip(),
-                "Notes": notes,
-                "followup_number": followup_number,
-            }
-        )
+            candidates.append(
+                {
+                    "row_index": row_index,
+                    "Email": email,
+                    "Contact": fields["Contact"].strip(),
+                    "Company": fields["Company"].strip(),
+                    "Notes": notes,
+                    "followup_number": followup_number,
+                }
+            )
+        except Exception as e:
+            print(f"followup: skip malformed row {row_index}: {e}")
+            continue
 
     return candidates
 
