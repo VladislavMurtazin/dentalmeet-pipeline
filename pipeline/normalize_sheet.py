@@ -1,4 +1,4 @@
-"""One-time cleanup: realign Pilot CRM / Agencies into columns A..L."""
+"""One-time cleanup: realign Pilot CRM / Agencies onto the current HEADERS columns."""
 
 from __future__ import annotations
 
