@@ -1,23 +1,8 @@
 name: lead-pipeline
 
 on:
-  schedule:
-    # Free plan budget: ~2000 min/mo after billing reset (~29 Sep).
-    # ~280 runs/mo × ~5–6 min ≈ 1400–1700 min (buffer left).
-    - cron: "0 8 * * 1,4"    # research — Mon+Thu
-    - cron: "0 14 * * 1-5"   # send — weekdays
-    - cron: "0 15 * * 1-5"   # followup1 — weekdays
-    - cron: "0 16 * * 1-5"   # followup2 — weekdays
-    - cron: "0 9,21 * * *"   # replies — 2×/day (leads)
-    - cron: "0 10 * * *"     # check_forms — 1×/day
-    - cron: "30 10 * * *"    # launch_pending — 1×/day
-    - cron: "0 11 * * *"     # payment_check — 1×/day
-    - cron: "0 7 * * *"      # warmup_send — 1×/day
-    - cron: "30 7 * * *"     # warmup_process — 1×/day
-    - cron: "30 9 * * 1"     # bounce_cleanup — Monday
-    - cron: "0 2 * * 0"      # backup — Sunday
-    # OFF (manual only): deliverability, blacklist, daily_summary,
-    # weekly_report, case_studies, pilot_invoices, calendar_sync, crm, analytics
+  # All cron schedules disabled — nothing auto-runs in Actions.
+  # Re-enable crons here when ready; until then use workflow_dispatch only.
   workflow_dispatch:
     inputs:
       job:
